@@ -18,9 +18,49 @@ def load_pose_from_json(json_path):
     pose_vector = torch.tensor(pose_data).float()
     return pose_vector
 
+def load_data_from_json(json_path):
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    return torch.tensor(data).float()
+
+def preprocess_person_image(Ip, Sp, Jp):
+    # Mask out the whole bounding box area of the foreground person
+    masked_person = Ip * (1 - Sp)
+
+    # Copy-paste the head, hands, and lower body part on top of it
+    # Assuming predefined masks for head, hands, and lower body based on Sp and Jp
+    head_mask, hands_mask, lower_body_mask = generate_masks(Sp, Jp)
+    clothing_agnostic = masked_person + Ip * head_mask + Ip * hands_mask + Ip * lower_body_mask
+
+    return clothing_agnostic
+
+def generate_masks(Sp, Jp):
+    # This function should generate masks for head, hands, and lower body based on Sp and Jp
+    # For simplicity, we're returning dummy masks. This needs to be implemented properly.
+    head_mask = torch.zeros_like(Sp)
+    hands_mask = torch.zeros_like(Sp)
+    lower_body_mask = torch.zeros_like(Sp)
+    return head_mask, hands_mask, lower_body_mask
+
 # Example usage:
 json_path_person = "./여러분_힘들죠.json"
-json_path_garment = "./얼른_끝내고_하루종일_자고싶어요.jason"
+json_path_garment = "./얼른_끝내고_하루종일_자고싶어요.json"
+
+Sp = load_data_from_json(json_path_person)
+Jp = load_data_from_json(json_path_person)
+Sg = load_data_from_json(json_path_garment)
+Jg = load_data_from_json(json_path_garment)
+
+# Assuming Ip and Ic are given
+Ia = preprocess_person_image(Ip, Sp, Jp)
+Ic = Ic * Sg  # Segment out the garment using the parsing map
+
+# Normalize pose keypoints to the range of [0, 1]
+Jp = (Jp - Jp.min()) / (Jp.max() - Jp.min())
+Jg = (Jg - Jg.min()) / (Jg.max() - Jg.min())
+
+# Conditional inputs for try-on
+ctryon = (Ia, Jp, Ic, Jg)
 
 person_pose = load_pose_from_json(json_path_person)
 garment_pose = load_pose_from_json(json_path_garment)
@@ -286,6 +326,25 @@ class GarmentUNet(nn.Module):
 
         # Return all the feature maps for cross attention with PersonUNet (if needed in the future)
         return [enc1, enc2, enc3, enc4, dec2]
+    
+class SuperResolutionDiffusionModel(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(SuperResolutionDiffusionModel, self).__init__()
+        
+        # 256x256 Parallel-UNet
+        self.unet = PersonUNet(in_channels, out_channels, embedding_dim=128)  # Assuming the same architecture as before
+        
+    def forward(self, I_128, ctryon):
+        # Upsample the 128x128 try-on result to 256x256 using bilinear upsampling
+        I_128_upsampled = F.interpolate(I_128, scale_factor=2, mode='bilinear', align_corners=True)
+        
+        # Concatenate the upsampled try-on result with the conditional inputs
+        # Assuming ctryon is a tuple containing (Ia, Jp, Ic, Jg)
+        Ia, _, Ic, _ = ctryon
+        concatenated_input = torch.cat([I_128_upsampled, Ia, Ic], dim=1)  # Concatenate along the channel dimension
+        
+        # Pass through the UNet
+        return self.unet(concatenated_input)
 
 # Example usage:
 person_model = PersonUNet(in_channels=2, out_channels=1, embedding_dim=128)  # Assuming Ia and zt both have 1 channel
@@ -293,4 +352,8 @@ garment_model = GarmentUNet(in_channels=1, out_channels=1)  # Assuming Ic has 1 
 
 # Assuming Ia, zt, and Ic are given
 garment_features = garment_model(Ic)
-person_output = person_model(Ia, zt, person_pose, garment_pose, garment_features)
+I_128 = person_model(Ia, zt, person_pose, garment_pose, garment_features)
+
+# Now, use the SuperResolutionDiffusionModel to upsample and concatenate
+super_resolution_model = SuperResolutionDiffusionModel(in_channels=3, out_channels=1)  # Assuming 1 channel for each input
+I_256 = super_resolution_model(I_128, (Ia, person_pose, Ic, garment_pose))
