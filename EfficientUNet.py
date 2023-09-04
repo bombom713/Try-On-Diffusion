@@ -281,5 +281,3 @@ warmup_steps = 10000
 # Lambda function for the learning rate schedule
 lr_lambda = lambda epoch: min(1.0, epoch / warmup_steps)
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-print(model)
