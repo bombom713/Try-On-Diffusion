@@ -8,18 +8,18 @@ import timm
 class Swish(nn.Module):
     def forward(self, x):
         return x * torch.sigmoid(x)
-
+    
 class ResNetBlock(nn.Module):
     def __init__(self, channels):
         super(ResNetBlock, self).__init__()
 
         # First GroupNorm -> Swish -> Convolution sequence
-        self.groupnorm1 = nn.GroupNorm(num_groups=32, num_channels=channels)  # groupnorm의 32값은 임의의 값이자 하이퍼파라미터 값 이므로, 1 or num_channels or 다른 수 총 3가지 옵션으로 조정 가능
+        self.groupnorm1 = nn.GroupNorm(num_groups=8, num_channels=channels)  # groupnorm의 32값은 임의의 값이자 하이퍼파라미터 값 이므로, 1 or num_channels or 다른 수 총 3가지 옵션으로 조정 가능
         self.swish1 = Swish()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
 
         # Second GroupNorm -> Swish -> Convolution sequence
-        self.groupnorm2 = nn.GroupNorm(num_groups=32, num_channels=channels)
+        self.groupnorm2 = nn.GroupNorm(num_groups=8, num_channels=channels)
         self.swish2 = Swish()
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
 
@@ -127,6 +127,9 @@ class EfficientNetEncoder(nn.Module):
 class UBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=(1, 1), numResNetBlocksPerBlock=1, use_self_attention=True, use_upsampling=True):
         super(UBlock, self).__init__()
+        
+        # use_upsampling 속성 초기화
+        self.use_upsampling = use_upsampling
 
         # Multiple ResNetBlocks
         self.resblocks = nn.Sequential(*[ResNetBlock(out_channels) for _ in range(numResNetBlocksPerBlock)])
@@ -152,7 +155,8 @@ class UBlock(nn.Module):
         if self.use_self_attention:
             x = self.self_attention(x)
         x = self.conv(x)
-        x = self.upsample(x)  # Upsampling after convolution
+        if self.use_upsampling:  # 조건 추가
+            x = self.upsample(x)  # Upsampling after convolution
         return x
     
 class EfficientUNet(nn.Module):
