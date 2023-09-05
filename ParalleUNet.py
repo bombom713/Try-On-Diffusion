@@ -373,6 +373,3 @@ I_128 = person_model(Ia, zt, person_pose, garment_pose, garment_features)
 # Now, use the SuperResolutionDiffusionModel to upsample and concatenate
 super_resolution_model = SuperResolutionDiffusionModel(in_channels=3, out_channels=1)  # Assuming 1 channel for each input
 I_256 = super_resolution_model(I_128, (Ia, person_pose, Ic, garment_pose))
-
-print(person_model)
-print(garment_model)
