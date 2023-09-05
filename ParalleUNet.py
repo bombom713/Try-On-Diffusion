@@ -2,6 +2,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import json
+from PIL import Image
+import torchvision.transforms as transforms
+
+# 이미지를 로드하고 텐서로 변환하는 함수
+def load_image_as_tensor(image_path):
+    image = Image.open(image_path).convert('RGB')
+    transform = transforms.Compose([
+        transforms.ToTensor()
+    ])
+    return transform(image)
+
+# 예를 들어, Ip 이미지의 경로가 './path_to_person_image.jpg'라면:
+Ip = load_image_as_tensor('./Model-Image/1008_A001_000.jpg')
 
 class PoseEmbedding(nn.Module):
     def __init__(self, pose_dim, embedding_dim):
@@ -11,25 +24,63 @@ class PoseEmbedding(nn.Module):
     def forward(self, pose):
         return self.fc(pose)
 
-def load_pose_from_json(json_path):
-    with open(json_path, 'r') as f:
-        pose_data = json.load(f)
-    # Assuming the JSON contains a list of pose coordinates
-    pose_vector = torch.tensor(pose_data).float()
-    return pose_vector
-
 def load_data_from_json(json_path):
     with open(json_path, 'r') as f:
         data = json.load(f)
-    return torch.tensor(data).float()
+    
+    segmentations = []
+    landmarks = []
+    
+    # 최상위에서 'segmentation' 및 'landmarks' 키 처리
+    if 'segmentation' in data:
+        seg_tensor = torch.tensor(data['segmentation']).float()
+        if len(seg_tensor.shape) == 1:  # 1차원 텐서인 경우
+            seg_tensor = seg_tensor.unsqueeze(0)  # 차원 추가
+        segmentations.append(seg_tensor)
 
+    if 'landmarks' in data:
+        landmark_tensor = torch.tensor(data['landmarks']).float()
+        if len(landmark_tensor.shape) == 1:  # 1차원 텐서인 경우
+            landmark_tensor = landmark_tensor.unsqueeze(0)  # 차원 추가
+        landmarks.append(landmark_tensor)
+    
+    # 중첩된 키에서 'segmentation' 및 'landmarks' 키 처리
+    for key in data:
+        if isinstance(data[key], dict):
+            if 'segmentation' in data[key] and data[key].get('category_id', None) in [9, 7, 8]:
+                segmentations.append(torch.tensor(data[key]['segmentation']).float())
+            elif 'landmarks' in data[key]:
+                landmarks.append(torch.tensor(data[key]['landmarks']).float())
+    
+    # 가장 큰 텐서의 크기를 찾습니다.
+    if segmentations or landmarks:
+        max_size_0 = max([s.size(0) for s in segmentations + landmarks])
+        max_size_1 = max([s.size(1) for s in segmentations + landmarks])
+        max_size_2 = max([s.size(2) if len(s.size()) > 2 else 0 for s in segmentations + landmarks])
+
+    # 각 텐서에 패딩을 추가합니다.
+    segmentations_padded = [F.pad(s, (0, max_size_2 - s.size(2), 0, max_size_1 - s.size(1))) for s in segmentations]
+    landmarks_padded = [F.pad(l, (0, max_size_1 - l.size(1))) for l in landmarks]
+
+    combined_data = []
+    if segmentations_padded:
+        combined_data.append(torch.sum(torch.stack(segmentations_padded), dim=0))
+    if landmarks_padded:
+        combined_data.append(torch.sum(torch.stack(landmarks_padded), dim=0))
+    
+    if combined_data:
+        return torch.cat(combined_data, dim=0)
+    
 def preprocess_person_image(Ip, Sp, Jp):
+    # 여러 세그멘테이션을 합칩니다.
+    combined_segmentation = torch.sum(torch.stack(Sp), dim=0)
+    
     # Mask out the whole bounding box area of the foreground person
-    masked_person = Ip * (1 - Sp)
-
+    masked_person = Ip * (1 - combined_segmentation)
+    
     # Copy-paste the head, hands, and lower body part on top of it
     # Assuming predefined masks for head, hands, and lower body based on Sp and Jp
-    head_mask, hands_mask, lower_body_mask = generate_masks(Sp, Jp)
+    head_mask, hands_mask, lower_body_mask = generate_masks(combined_segmentation, Jp)
     clothing_agnostic = masked_person + Ip * head_mask + Ip * hands_mask + Ip * lower_body_mask
 
     return clothing_agnostic
@@ -43,14 +94,18 @@ def generate_masks(Sp, Jp):
     return head_mask, hands_mask, lower_body_mask
 
 # Example usage:
-json_path_person = "./여러분_힘들죠.json"
-json_path_garment = "./얼른_끝내고_하루종일_자고싶어요.json"
+spjason = "./Model-Parse/1008_A001_000.json"
+jpjason = "./Model-Pose/1008_A001_000.json"
+sgjason = "./Item-Parse/0928015_B.json"
+jgjason = "./Item-Pose/0928015_B.json"
 
-Sp = load_data_from_json(json_path_person)
-Jp = load_data_from_json(json_path_person)
-Sg = load_data_from_json(json_path_garment)
-Jg = load_data_from_json(json_path_garment)
+Sp = load_data_from_json(spjason)  # person human parsing map
+Jp = load_data_from_json(jpjason)  # person pose keypoints
+Sg = load_data_from_json(sgjason)  # garment human parsing map
+Jg = load_data_from_json(jgjason)  # garment pose keypoints
 
+print(Sp)
+# ------------------------------------------여기까지 디버깅 완료
 # Assuming Ip and Ic are given
 Ia = preprocess_person_image(Ip, Sp, Jp)
 Ic = Ic * Sg  # Segment out the garment using the parsing map
@@ -327,49 +382,26 @@ class GarmentUNet(nn.Module):
         # Return all the feature maps for cross attention with PersonUNet (if needed in the future)
         return [enc1, enc2, enc3, enc4, dec2]
     
-class SuperResolutionDiffusionModel(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(SuperResolutionDiffusionModel, self).__init__()
-        
-        # 256x256 Parallel-UNet
-        self.unet = PersonUNet(in_channels, out_channels, embedding_dim=128)  # Assuming the same architecture as before
-        
-    def forward(self, I_128, ctryon):
-        # Upsample the 128x128 try-on result to 256x256 using bilinear upsampling
-        I_128_upsampled = F.interpolate(I_128, scale_factor=2, mode='bilinear', align_corners=True)
-        
-        # Concatenate the upsampled try-on result with the conditional inputs
-        # Assuming ctryon is a tuple containing (Ia, Jp, Ic, Jg)
-        Ia, _, Ic, _ = ctryon
-        concatenated_input = torch.cat([I_128_upsampled, Ia, Ic], dim=1)  # Concatenate along the channel dimension
-        
-        # Pass through the UNet
-        return self.unet(concatenated_input)
-    
 class TryOnDiffusionModel(nn.Module):
     def __init__(self):
         super(TryOnDiffusionModel, self).__init__()
         
         self.person_model = PersonUNet(in_channels=2, out_channels=1, embedding_dim=128)  # Ia와 zt 모두 1 채널이라고 가정
         self.garment_model = GarmentUNet(in_channels=1, out_channels=1)  # Ic가 1 채널이라고 가정
-        self.super_resolution_model = SuperResolutionDiffusionModel(in_channels=3, out_channels=1)  # 각 입력에 대해 1 채널이라고 가정
+        self.super_resolution_unet = PersonUNet(in_channels=3, out_channels=1, embedding_dim=128)  # 256x256 Parallel-UNet
 
     def forward(self, Ia, zt, person_pose, garment_pose, Ic):
         garment_features = self.garment_model(Ic)
         I_128 = self.person_model(Ia, zt, person_pose, garment_pose, garment_features)
-        I_256 = self.super_resolution_model(I_128, (Ia, person_pose, Ic, garment_pose))
+        
+        I_128_upsampled = F.interpolate(I_128, scale_factor=2, mode='bilinear', align_corners=True)
+        concatenated_input = torch.cat([I_128_upsampled, Ia, Ic], dim=1)  # Concatenate along the channel dimension
+        I_256 = self.super_resolution_unet(concatenated_input)
+        
         return I_256
 
 # Example usage:
-person_model = PersonUNet(in_channels=2, out_channels=1, embedding_dim=128)  # Assuming Ia and zt both have 1 channel
-garment_model = GarmentUNet(in_channels=1, out_channels=1)  # Assuming Ic has 1 channel
-try_on_model = TryOnDiffusionModel()
-I_256_result = try_on_model(Ia, zt, person_pose, garment_pose, Ic)
+output = TryOnDiffusionModel()
+I_256_result = output(Ia, zt, person_pose, garment_pose, Ic)
 
-# Assuming Ia, zt, and Ic are given
-garment_features = garment_model(Ic)
-I_128 = person_model(Ia, zt, person_pose, garment_pose, garment_features)
-
-# Now, use the SuperResolutionDiffusionModel to upsample and concatenate
-super_resolution_model = SuperResolutionDiffusionModel(in_channels=3, out_channels=1)  # Assuming 1 channel for each input
-I_256 = super_resolution_model(I_128, (Ia, person_pose, Ic, garment_pose))
+print(output)
