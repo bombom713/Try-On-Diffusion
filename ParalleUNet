@@ -345,10 +345,26 @@ class SuperResolutionDiffusionModel(nn.Module):
         
         # Pass through the UNet
         return self.unet(concatenated_input)
+    
+class TryOnDiffusionModel(nn.Module):
+    def __init__(self):
+        super(TryOnDiffusionModel, self).__init__()
+        
+        self.person_model = PersonUNet(in_channels=2, out_channels=1, embedding_dim=128)  # Ia와 zt 모두 1 채널이라고 가정
+        self.garment_model = GarmentUNet(in_channels=1, out_channels=1)  # Ic가 1 채널이라고 가정
+        self.super_resolution_model = SuperResolutionDiffusionModel(in_channels=3, out_channels=1)  # 각 입력에 대해 1 채널이라고 가정
+
+    def forward(self, Ia, zt, person_pose, garment_pose, Ic):
+        garment_features = self.garment_model(Ic)
+        I_128 = self.person_model(Ia, zt, person_pose, garment_pose, garment_features)
+        I_256 = self.super_resolution_model(I_128, (Ia, person_pose, Ic, garment_pose))
+        return I_256
 
 # Example usage:
 person_model = PersonUNet(in_channels=2, out_channels=1, embedding_dim=128)  # Assuming Ia and zt both have 1 channel
 garment_model = GarmentUNet(in_channels=1, out_channels=1)  # Assuming Ic has 1 channel
+try_on_model = TryOnDiffusionModel()
+I_256_result = try_on_model(Ia, zt, person_pose, garment_pose, Ic)
 
 # Assuming Ia, zt, and Ic are given
 garment_features = garment_model(Ic)
@@ -357,3 +373,6 @@ I_128 = person_model(Ia, zt, person_pose, garment_pose, garment_features)
 # Now, use the SuperResolutionDiffusionModel to upsample and concatenate
 super_resolution_model = SuperResolutionDiffusionModel(in_channels=3, out_channels=1)  # Assuming 1 channel for each input
 I_256 = super_resolution_model(I_128, (Ia, person_pose, Ic, garment_pose))
+
+print(person_model)
+print(garment_model)
