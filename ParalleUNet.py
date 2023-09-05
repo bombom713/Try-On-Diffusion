@@ -5,17 +5,6 @@ import json
 from PIL import Image
 import torchvision.transforms as transforms
 
-# 이미지를 로드하고 텐서로 변환하는 함수
-def load_image_as_tensor(image_path):
-    image = Image.open(image_path).convert('RGB')
-    transform = transforms.Compose([
-        transforms.ToTensor()
-    ])
-    return transform(image)
-
-# 예를 들어, Ip 이미지의 경로가 './path_to_person_image.jpg'라면:
-Ip = load_image_as_tensor('./Model-Image/1008_A001_000.jpg')
-
 class PoseEmbedding(nn.Module):
     def __init__(self, pose_dim, embedding_dim):
         super(PoseEmbedding, self).__init__()
@@ -24,53 +13,6 @@ class PoseEmbedding(nn.Module):
     def forward(self, pose):
         return self.fc(pose)
 
-def load_data_from_json(json_path):
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-    
-    segmentations = []
-    landmarks = []
-    
-    # 최상위에서 'segmentation' 및 'landmarks' 키 처리
-    if 'segmentation' in data:
-        seg_tensor = torch.tensor(data['segmentation']).float()
-        if len(seg_tensor.shape) == 1:  # 1차원 텐서인 경우
-            seg_tensor = seg_tensor.unsqueeze(0)  # 차원 추가
-        segmentations.append(seg_tensor)
-
-    if 'landmarks' in data:
-        landmark_tensor = torch.tensor(data['landmarks']).float()
-        if len(landmark_tensor.shape) == 1:  # 1차원 텐서인 경우
-            landmark_tensor = landmark_tensor.unsqueeze(0)  # 차원 추가
-        landmarks.append(landmark_tensor)
-    
-    # 중첩된 키에서 'segmentation' 및 'landmarks' 키 처리
-    for key in data:
-        if isinstance(data[key], dict):
-            if 'segmentation' in data[key] and data[key].get('category_id', None) in [9, 7, 8]:
-                segmentations.append(torch.tensor(data[key]['segmentation']).float())
-            elif 'landmarks' in data[key]:
-                landmarks.append(torch.tensor(data[key]['landmarks']).float())
-    
-    # 가장 큰 텐서의 크기를 찾습니다.
-    if segmentations or landmarks:
-        max_size_0 = max([s.size(0) for s in segmentations + landmarks])
-        max_size_1 = max([s.size(1) for s in segmentations + landmarks])
-        max_size_2 = max([s.size(2) if len(s.size()) > 2 else 0 for s in segmentations + landmarks])
-
-    # 각 텐서에 패딩을 추가합니다.
-    segmentations_padded = [F.pad(s, (0, max_size_2 - s.size(2), 0, max_size_1 - s.size(1))) for s in segmentations]
-    landmarks_padded = [F.pad(l, (0, max_size_1 - l.size(1))) for l in landmarks]
-
-    combined_data = []
-    if segmentations_padded:
-        combined_data.append(torch.sum(torch.stack(segmentations_padded), dim=0))
-    if landmarks_padded:
-        combined_data.append(torch.sum(torch.stack(landmarks_padded), dim=0))
-    
-    if combined_data:
-        return torch.cat(combined_data, dim=0)
-    
 def preprocess_person_image(Ip, Sp, Jp):
     # 여러 세그멘테이션을 합칩니다.
     combined_segmentation = torch.sum(torch.stack(Sp), dim=0)
@@ -92,30 +34,6 @@ def generate_masks(Sp, Jp):
     hands_mask = torch.zeros_like(Sp)
     lower_body_mask = torch.zeros_like(Sp)
     return head_mask, hands_mask, lower_body_mask
-
-# Example usage:
-spjason = "./Model-Parse/1008_A001_000.json"
-jpjason = "./Model-Pose/1008_A001_000.json"
-sgjason = "./Item-Parse/0928015_B.json"
-jgjason = "./Item-Pose/0928015_B.json"
-
-Sp = load_data_from_json(spjason)  # person human parsing map
-Jp = load_data_from_json(jpjason)  # person pose keypoints
-Sg = load_data_from_json(sgjason)  # garment human parsing map
-Jg = load_data_from_json(jgjason)  # garment pose keypoints
-
-print(Sp)
-# ------------------------------------------여기까지 디버깅 완료
-# Assuming Ip and Ic are given
-Ia = preprocess_person_image(Ip, Sp, Jp)
-Ic = Ic * Sg  # Segment out the garment using the parsing map
-
-# Normalize pose keypoints to the range of [0, 1]
-Jp = (Jp - Jp.min()) / (Jp.max() - Jp.min())
-Jg = (Jg - Jg.min()) / (Jg.max() - Jg.min())
-
-# Conditional inputs for try-on
-ctryon = (Ia, Jp, Ic, Jg)
 
 person_pose = load_pose_from_json(json_path_person)
 garment_pose = load_pose_from_json(json_path_garment)
