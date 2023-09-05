@@ -13,27 +13,12 @@ class PoseEmbedding(nn.Module):
     def forward(self, pose):
         return self.fc(pose)
 
-def preprocess_person_image(Ip, Sp, Jp):
-    # 여러 세그멘테이션을 합칩니다.
-    combined_segmentation = torch.sum(torch.stack(Sp), dim=0)
-    
-    # Mask out the whole bounding box area of the foreground person
-    masked_person = Ip * (1 - combined_segmentation)
-    
-    # Copy-paste the head, hands, and lower body part on top of it
-    # Assuming predefined masks for head, hands, and lower body based on Sp and Jp
-    head_mask, hands_mask, lower_body_mask = generate_masks(combined_segmentation, Jp)
-    clothing_agnostic = masked_person + Ip * head_mask + Ip * hands_mask + Ip * lower_body_mask
-
-    return clothing_agnostic
-
-def generate_masks(Sp, Jp):
-    # This function should generate masks for head, hands, and lower body based on Sp and Jp
-    # For simplicity, we're returning dummy masks. This needs to be implemented properly.
-    head_mask = torch.zeros_like(Sp)
-    hands_mask = torch.zeros_like(Sp)
-    lower_body_mask = torch.zeros_like(Sp)
-    return head_mask, hands_mask, lower_body_mask
+def load_pose_from_json(json_path):
+    with open(json_path, 'r') as f:
+        pose_data = json.load(f)
+    # Assuming the JSON contains a list of pose coordinates
+    pose_vector = torch.tensor(pose_data).float()
+    return pose_vector
 
 person_pose = load_pose_from_json(json_path_person)
 garment_pose = load_pose_from_json(json_path_garment)
