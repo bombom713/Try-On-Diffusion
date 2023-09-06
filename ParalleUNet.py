@@ -60,144 +60,216 @@ class ParallelUNet128(nn.Module):
         self.clip_pooling = CLIP1DAttentionPooling(512)
 
         # Person-UNet
-        self.person_unet = nn.Sequential(
-            nn.Conv2d(6, 64, 3, padding=1),  # Ia, Jp, Jg의 연결
-            FiLM(64),
-            ResidualBlock(64, 64),
-            ResidualBlock(64, 64),
-            ResidualBlock(64, 64),
-            nn.MaxPool2d(2, 2),
-            FiLM(64),
-            self.jp_embedding, 
-            self.jg_embedding,
-            ResidualBlock(64, 128),
-            ResidualBlock(128, 128),
-            ResidualBlock(128, 128),
-            ResidualBlock(128, 128),
-            nn.MaxPool2d(2, 2),
-            FiLM(128),
-            self.jp_embedding,
-            self.jg_embedding, 
-            ResidualBlock(128, 256),
-            SelfAttention(256),
-            CrossAttention(256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            nn.MaxPool2d(2, 2),
-            FiLM(256),
-            ResidualBlock(256, 512),
-            SelfAttention(512),
-            CrossAttention(512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2),
-            FiLM(512),
-            ResidualBlock(512, 256),
-            SelfAttention(256),
-            CrossAttention(256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2),
-            FiLM(256),
-            ResidualBlock(256, 128),
-            ResidualBlock(128, 128),
-            ResidualBlock(128, 128),
-            ResidualBlock(128, 128),
-            nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2),
-            FiLM(128),
-            ResidualBlock(128, 64),
-            ResidualBlock(64, 64),
-            ResidualBlock(64, 64),
-            nn.Conv2d(64, 3, 3, padding=1)
-        )
-        
+        self.p_conv1 = nn.Conv2d(6, 64, 3, padding=1)
+        self.p_film1 = FiLM(64)
+        self.p_resblock1 = ResidualBlock(64, 64)
+        self.p_resblock2 = ResidualBlock(64, 64)
+        self.p_resblock3 = ResidualBlock(64, 64)
+        self.p_maxpool1 = nn.MaxPool2d(2, 2)
+        self.p_film2 = FiLM(64)
+        self.p_resblock4 = ResidualBlock(64, 128)
+        self.p_resblock5 = ResidualBlock(128, 128)
+        self.p_resblock6 = ResidualBlock(128, 128)
+        self.p_resblock7 = ResidualBlock(128, 128)
+        self.p_maxpool2 = nn.MaxPool2d(2, 2)
+        self.p_film3 = FiLM(128)
+        self.p_resblock8 = ResidualBlock(128, 256)
+        self.p_selfattention1 = SelfAttention(256)
+        self.p_crossattention1 = CrossAttention(256)
+        self.p_resblock9 = ResidualBlock(256, 256)
+        self.p_resblock10 = ResidualBlock(256, 256)
+        self.p_resblock11 = ResidualBlock(256, 256)
+        self.p_resblock12 = ResidualBlock(256, 256)
+        self.p_maxpool3 = nn.MaxPool2d(2, 2)
+        self.p_film4 = FiLM(256)
+        self.p_resblock13 = ResidualBlock(256, 512)
+        self.p_selfattention2 = SelfAttention(512)
+        self.p_crossattention2 = CrossAttention(512)
+        self.p_resblock14 = ResidualBlock(512, 512)
+        self.p_resblock15 = ResidualBlock(512, 512)
+        self.p_resblock16 = ResidualBlock(512, 512)
+        self.p_resblock17 = ResidualBlock(512, 512)
+        self.p_convT1 = nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2)
+        self.p_film5 = FiLM(512)
+        self.p_resblock18 = ResidualBlock(512, 256)
+        self.p_selfattention3 = SelfAttention(256)
+        self.p_crossattention3 = CrossAttention(256)
+        self.p_resblock19 = ResidualBlock(256, 256)
+        self.p_resblock20 = ResidualBlock(256, 256)
+        self.p_resblock21 = ResidualBlock(256, 256)
+        self.p_resblock22 = ResidualBlock(256, 256)
+        self.p_convT2 = nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2)
+        self.p_film6 = FiLM(256)
+        self.p_resblock23 = ResidualBlock(256, 128)
+        self.p_resblock24 = ResidualBlock(128, 128)
+        self.p_resblock25 = ResidualBlock(128, 128)
+        self.p_resblock26 = ResidualBlock(128, 128)
+        self.p_convT3 = nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2)
+        self.p_film7 = FiLM(128)
+        self.p_resblock27 = ResidualBlock(128, 64)
+        self.p_resblock28 = ResidualBlock(64, 64)
+        self.p_resblock29 = ResidualBlock(64, 64)
+        self.p_conv2 = nn.Conv2d(64, 3, 3, padding=1)
+
         # Garment-UNet
-        self.garment_unet = nn.Sequential(
-            nn.Conv2d(3, 64, 3, padding=1),  # Ic만을 사용
-            FiLM(64),
-            ResidualBlock(64, 64),
-            ResidualBlock(64, 64),
-            ResidualBlock(64, 64),  
-            FiLM(64),
-            ResidualBlock(64, 128),
-            ResidualBlock(128, 128),
-            ResidualBlock(128, 128),
-            ResidualBlock(128, 128),
-            FiLM(128),
-            ResidualBlock(128, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),  
-            FiLM(256),
-            ResidualBlock(256, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 512), 
-            # Decoding part with skip connections
-            nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2),
-            FiLM(512),
-            ResidualBlock(512, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            FiLM(256),
-            ResidualBlock(256, 128),
-            ResidualBlock(128, 128),
-            ResidualBlock(128, 128),
-            ResidualBlock(128, 128) 
-        ) 
+        self.g_conv1 = nn.Conv2d(3, 64, 3, padding=1)
+        self.g_film1 = FiLM(64)
+        self.g_resblock1 = ResidualBlock(64, 64)
+        self.g_resblock2 = ResidualBlock(64, 64)
+        self.g_resblock3 = ResidualBlock(64, 64)
+        self.g_film2 = FiLM(64)
+        self.g_resblock4 = ResidualBlock(64, 128)
+        self.g_resblock5 = ResidualBlock(128, 128)
+        self.g_resblock6 = ResidualBlock(128, 128)
+        self.g_resblock7 = ResidualBlock(128, 128)
+        self.g_film3 = FiLM(128)
+        self.g_resblock8 = ResidualBlock(128, 256)
+        self.g_resblock9 = ResidualBlock(256, 256)
+        self.g_resblock10 = ResidualBlock(256, 256)
+        self.g_resblock11 = ResidualBlock(256, 256)
+        self.g_resblock12 = ResidualBlock(256, 256)
+        self.g_resblock13 = ResidualBlock(256, 256)
+        self.g_film4 = FiLM(256)
+        self.g_resblock14 = ResidualBlock(256, 512)
+        self.g_resblock15 = ResidualBlock(512, 512)
+        self.g_resblock16 = ResidualBlock(512, 512)
+        self.g_resblock17 = ResidualBlock(512, 512)
+        self.g_resblock18 = ResidualBlock(512, 512)
+        self.g_resblock19 = ResidualBlock(512, 512)
+        self.g_resblock20 = ResidualBlock(512, 512)
+        self.g_resblock21 = ResidualBlock(512, 512)
+        self.g_convT1 = nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2)
+        self.g_film5 = FiLM(512)
+        self.g_resblock22 = ResidualBlock(512, 256)
+        self.g_resblock23 = ResidualBlock(256, 256)
+        self.g_resblock24 = ResidualBlock(256, 256)
+        self.g_resblock25 = ResidualBlock(256, 256)
+        self.g_resblock26 = ResidualBlock(256, 256)
+        self.g_resblock27 = ResidualBlock(256, 256)
+        self.g_film6 = FiLM(256)
+        self.g_resblock28 = ResidualBlock(256, 128)
+        self.g_resblock29 = ResidualBlock(128, 128)
+        self.g_resblock30 = ResidualBlock(128, 128)
+        self.g_resblock31 = ResidualBlock(128, 128)
 
         # Jp와 Jg의 임베딩
         self.jp_embedding = nn.Linear(Jp.size(-1), 512)
         self.jg_embedding = nn.Linear(Jg.size(-1), 512)
 
     def forward(self, Ia, Jp, Jg, Ic):
-        # zt와 Ia 연결
-        x = torch.cat([zt, Ia], dim=1)
-        
         # Person-UNet
-        human_features = self.human_unet(torch.cat([Ia, Jp, Jg], dim=1))
-        
+        x = torch.cat([Ia, Jp, Jg], dim=1)
+        x1 = self.p_conv1(x)
+        x1 = self.p_film1(x1)
+        x1 = self.p_resblock1(x1)
+        x1 = self.p_resblock2(x1)
+        x1 = self.p_resblock3(x1)
+        x2 = self.p_maxpool1(x1)
+        x2 = self.p_film2(x2)
+        x2 = self.p_resblock4(x2)
+        x2 = self.p_resblock5(x2)
+        x2 = self.p_resblock6(x2)
+        x2 = self.p_resblock7(x2)
+        x3 = self.p_maxpool2(x2)
+        x3 = self.p_film3(x3)
+        x3 = self.p_resblock8(x3)
+        x3 = self.p_selfattention1(x3)
+        x3 = self.p_crossattention1(x3)
+        x3 = self.p_resblock9(x3)
+        x3 = self.p_resblock10(x3)
+        x3 = self.p_resblock11(x3)
+        x3 = self.p_resblock12(x3)
+        x4 = self.p_maxpool3(x3)
+        x4 = self.p_film4(x4)
+        x4 = self.p_resblock13(x4)
+        x4 = self.p_selfattention2(x4)
+        x4 = self.p_crossattention2(x4)
+        x4 = self.p_resblock14(x4)
+        x4 = self.p_resblock15(x4)
+        x4 = self.p_resblock16(x4)
+        x4 = self.p_resblock17(x4)
+        x5 = self.p_convT1(x4)
+        x5 = torch.cat([x5, x3], dim=1)  # Skip connection
+        x5 = self.p_film5(x5)
+        x5 = self.p_resblock18(x5)
+        x5 = self.p_selfattention3(x5)
+        x5 = self.p_crossattention3(x5)
+        x5 = self.p_resblock19(x5)
+        x5 = self.p_resblock20(x5)
+        x5 = self.p_resblock21(x5)
+        x5 = self.p_resblock22(x5)
+        x6 = self.p_convT2(x5)
+        x6 = torch.cat([x6, x2], dim=1)  # Skip connection
+        x6 = self.p_film6(x6)
+        x6 = self.p_resblock23(x6)
+        x6 = self.p_resblock24(x6)
+        x6 = self.p_resblock25(x6)
+        x6 = self.p_resblock26(x6)
+        x7 = self.p_convT3(x6)
+        x7 = torch.cat([x7, x1], dim=1)  # Skip connection
+        x7 = self.p_film7(x7)
+        x7 = self.p_resblock27(x7)
+        x7 = self.p_resblock28(x7)
+        x7 = self.p_resblock29(x7)
+        x_out = self.p_conv2(x7)
+
         # Garment-UNet
-        garment_features = self.garment_unet(Ic)
-        
+        y1 = self.g_conv1(Ic)
+        y1 = self.g_film1(y1)
+        y1 = self.g_resblock1(y1)
+        y1 = self.g_resblock2(y1)
+        y1 = self.g_resblock3(y1)
+        y2 = self.g_film2(y1)
+        y2 = self.g_resblock4(y2)
+        y2 = self.g_resblock5(y2)
+        y2 = self.g_resblock6(y2)
+        y2 = self.g_resblock7(y2)
+        y3 = self.g_film3(y2)
+        y3 = self.g_resblock8(y3)
+        y3 = self.g_resblock9(y3)
+        y3 = self.g_resblock10(y3)
+        y3 = self.g_resblock11(y3)
+        y3 = self.g_resblock12(y3)
+        y3 = self.g_resblock13(y3)
+        y4 = self.g_film4(y3)
+        y4 = self.g_resblock14(y4)
+        y4 = self.g_resblock15(y4)
+        y4 = self.g_resblock16(y4)
+        y4 = self.g_resblock17(y4)
+        y4 = self.g_resblock18(y4)
+        y4 = self.g_resblock19(y4)
+        y4 = self.g_resblock20(y4)
+        y4 = self.g_resblock21(y4)
+        y5 = self.g_convT1(y4)
+        y5 = torch.cat([y5, y3], dim=1)  # Skip connection
+        y5 = self.g_film5(y5)
+        y5 = self.g_resblock22(y5)
+        y5 = self.g_resblock23(y5)
+        y5 = self.g_resblock24(y5)
+        y5 = self.g_resblock25(y5)
+        y5 = self.g_resblock26(y5)
+        y5 = self.g_resblock27(y5)
+        y6 = self.g_film6(y5)
+        y6 = self.g_resblock28(y6)
+        y6 = self.g_resblock29(y6)
+        y6 = self.g_resblock30(y6)
+        y6 = self.g_resblock31(y6)
+        y_out = torch.cat([y6, y2], dim=1)  # Skip connection
+
         # Jp와 Jg의 임베딩
         jp_embed = self.jp_embedding(Jp)
         jg_embed = self.jg_embedding(Jg)
         
         # Cross Attention
-        fused_features = self.cross_attention(person_features, jp_embed, jg_embed)
+        fused_features = self.cross_attention(x, jp_embed, jg_embed)
         
         fused_embedding = jp_embed + jg_embed
         fused_embedding_pooled = self.clip_pooling(fused_embedding)
         
         # Skip connections and feature fusion
-        combined_features = person_features + garment_features + fused_features
+        combined_features = x + y + fused_features
         
         return combined_features
-
     
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
