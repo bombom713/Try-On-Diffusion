@@ -15,8 +15,14 @@ class CrossAttention(nn.Module):
     def __init__(self, d):
         super(CrossAttention, self).__init__()
         self.scale = d ** 0.5
+        self.query = nn.Linear(d, d)
+        self.key = nn.Linear(d, d)
+        self.value = nn.Linear(d, d)
 
     def forward(self, Q, K, V):
+        Q = self.query(Q)
+        K = self.key(K)
+        V = self.value(V)
         attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)) / self.scale, dim=-1)
         return torch.matmul(attention, V)
 
@@ -88,7 +94,7 @@ class ParallelUNet128(nn.Module):
             ResidualBlock(512, 512),
             ResidualBlock(512, 512),
             ResidualBlock(512, 512),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2),
             FiLM(512),
             ResidualBlock(512, 256),
             SelfAttention(256),
@@ -99,13 +105,13 @@ class ParallelUNet128(nn.Module):
             ResidualBlock(256, 256),
             ResidualBlock(256, 256),
             ResidualBlock(256, 256),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2),
             FiLM(256),
             ResidualBlock(256, 128),
             ResidualBlock(128, 128),
             ResidualBlock(128, 128),
             ResidualBlock(128, 128),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2),
             FiLM(128),
             ResidualBlock(128, 64),
             ResidualBlock(64, 64),
@@ -115,23 +121,23 @@ class ParallelUNet128(nn.Module):
         
         # Garment-UNet
         self.garment_unet = nn.Sequential(
-            nn.Conv2d(3, 64, 3, padding=1),  # Initial 3x3 conv for Ic
+            nn.Conv2d(3, 64, 3, padding=1),
             FiLM(64),
             ResidualBlock(64, 64),
             ResidualBlock(64, 64),
-            ResidualBlock(64, 64),  # FiLM and ResBlk at resolution 128 repeated 3 times
+            ResidualBlock(64, 64),  
             FiLM(64),
             ResidualBlock(64, 128),
             ResidualBlock(128, 128),
             ResidualBlock(128, 128),
-            ResidualBlock(128, 128),  # FiLM and ResBlk at resolution 64 repeated 4 times
+            ResidualBlock(128, 128),
             FiLM(128),
             ResidualBlock(128, 256),
             ResidualBlock(256, 256),
             ResidualBlock(256, 256),
             ResidualBlock(256, 256),
             ResidualBlock(256, 256),
-            ResidualBlock(256, 256),  # FiLM and ResBlk at resolution 32 repeated 6 times
+            ResidualBlock(256, 256),  
             FiLM(256),
             ResidualBlock(256, 512),
             ResidualBlock(512, 512),
@@ -140,25 +146,26 @@ class ParallelUNet128(nn.Module):
             ResidualBlock(512, 512),
             ResidualBlock(512, 512),
             ResidualBlock(512, 512),
-            ResidualBlock(512, 512),  # FiLM and ResBlk at resolution 16 repeated 7 times
+            ResidualBlock(512, 512), 
             # Decoding part
+            nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2),
             FiLM(512),
             ResidualBlock(512, 256),
             ResidualBlock(256, 256),
             ResidualBlock(256, 256),
             ResidualBlock(256, 256),
             ResidualBlock(256, 256),
-            ResidualBlock(256, 256),  # FiLM and ResBlk at resolution 32 repeated 6 times
+            ResidualBlock(256, 256),
             FiLM(256),
             ResidualBlock(256, 128),
             ResidualBlock(128, 128),
             ResidualBlock(128, 128),
-            ResidualBlock(128, 128)   # FiLM and ResBlk at resolution 16 repeated 7 times
+            ResidualBlock(128, 128) 
         )
 
         # Jp와 Jg의 임베딩
-        self.jp_embedding = nn.Linear(Jp.size(1), 512)
-        self.jg_embedding = nn.Linear(Jg.size(1), 512)
+        self.jp_embedding = nn.Linear(Jp.size(-1), 512)
+        self.jg_embedding = nn.Linear(Jg.size(-1), 512)
 
     def forward(self, Ia, zt, Ic):
         # zt와 Ia 연결
@@ -349,6 +356,9 @@ class DiffusionModel(nn.Module):
         
         # Blend Diffusion Model
         I_128_tr = self.blend_model(Iwc, Ia, Jp, Jg)
+        
+        # Cross Attention
+        fused_features = self.cross_attention(person_features, garment_features, garment_features)
         
         # SR Diffusion Model 256x256
         I_256 = self.sr_model_256(I_128, Ia.view(-1))
