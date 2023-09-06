@@ -101,6 +101,8 @@ Sg = F.interpolate(Sg.unsqueeze(0).unsqueeze(0), size=(Ic.size(1), Ic.size(2)), 
 Ia = Ia(Ip, Sp, Jp)
 Ic = Ic * Sg  # Segment out the garment using the parsing map
 
+zt = torch.randn_like(Ia)
+
 ctryon = (Ia, Jp, Ic, Jg)
 
-# print(ctryon)
+print(ctryon)
