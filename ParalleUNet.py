@@ -33,14 +33,16 @@ class SelfAttention(nn.Module):
         self.key = nn.Conv2d(in_channels, in_channels // 8, 1)
         self.value = nn.Conv2d(in_channels, in_channels, 1)
         self.gamma = nn.Parameter(torch.zeros(1))
+        self.scale = in_channels ** 0.5  # 스케일링을 위한 변수 추가
 
     def forward(self, x):
         Q = self.query(x)
         K = self.key(x)
         V = self.value(x)
-        attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)), dim=-1)
+        attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)) / self.scale, dim=-1)  # 스케일링 적용
         out = torch.matmul(attention, V)
         return self.gamma * out + x
+
 
 class CLIP1DAttentionPooling(nn.Module):
     def __init__(self, embedding_dim):
@@ -59,19 +61,23 @@ class ParallelUNet128(nn.Module):
 
         # Person-UNet
         self.person_unet = nn.Sequential(
-            nn.Conv2d(6, 64, 3, padding=1),  # zt와 Ia의 연결
+            nn.Conv2d(6, 64, 3, padding=1),  # Ia, Jp, Jg의 연결
             FiLM(64),
             ResidualBlock(64, 64),
             ResidualBlock(64, 64),
             ResidualBlock(64, 64),
             nn.MaxPool2d(2, 2),
             FiLM(64),
+            self.jp_embedding, 
+            self.jg_embedding,
             ResidualBlock(64, 128),
             ResidualBlock(128, 128),
             ResidualBlock(128, 128),
             ResidualBlock(128, 128),
             nn.MaxPool2d(2, 2),
             FiLM(128),
+            self.jp_embedding,
+            self.jg_embedding, 
             ResidualBlock(128, 256),
             SelfAttention(256),
             CrossAttention(256),
@@ -121,7 +127,7 @@ class ParallelUNet128(nn.Module):
         
         # Garment-UNet
         self.garment_unet = nn.Sequential(
-            nn.Conv2d(3, 64, 3, padding=1),
+            nn.Conv2d(3, 64, 3, padding=1),  # Ic만을 사용
             FiLM(64),
             ResidualBlock(64, 64),
             ResidualBlock(64, 64),
@@ -147,7 +153,7 @@ class ParallelUNet128(nn.Module):
             ResidualBlock(512, 512),
             ResidualBlock(512, 512),
             ResidualBlock(512, 512), 
-            # Decoding part
+            # Decoding part with skip connections
             nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2),
             FiLM(512),
             ResidualBlock(512, 256),
@@ -161,18 +167,18 @@ class ParallelUNet128(nn.Module):
             ResidualBlock(128, 128),
             ResidualBlock(128, 128),
             ResidualBlock(128, 128) 
-        )
+        ) 
 
         # Jp와 Jg의 임베딩
         self.jp_embedding = nn.Linear(Jp.size(-1), 512)
         self.jg_embedding = nn.Linear(Jg.size(-1), 512)
 
-    def forward(self, Ia, zt, Ic):
+    def forward(self, Ia, Jp, Jg, Ic):
         # zt와 Ia 연결
         x = torch.cat([zt, Ia], dim=1)
         
         # Person-UNet
-        person_features = self.person_unet(x)
+        human_features = self.human_unet(torch.cat([Ia, Jp, Jg], dim=1))
         
         # Garment-UNet
         garment_features = self.garment_unet(Ic)
@@ -200,6 +206,7 @@ class ResidualBlock(nn.Module):
             nn.GroupNorm(min(32, in_channels // 4), in_channels),
             nn.SiLU(), 
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            FiLM(out_channels),  # FiLM 레이어 추가
             nn.GroupNorm(min(32, out_channels // 4), out_channels),
             nn.SiLU(),  
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
@@ -207,7 +214,7 @@ class ResidualBlock(nn.Module):
         self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
-        return self.skip(x) + self.main(x)
+        return self.skip(x) * self.main(x)
 
 class UNetBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -430,5 +437,31 @@ for iteration in range(iterations):
 
 # Inference
 with torch.no_grad():
-    z_T = torch.randn(2560 * 720 * 3)  # Gaussian noise
-    generated_image = model(z_T, Jp.view(-1))  # Use the trained model to generate an image from the noise
+    # 가우시안 노이즈 zT ∼ N (0, I)
+    z_T = torch.randn(2560 * 720 * 3)
+    
+    # 기본 확산 모델은 DDPM을 사용하여 256 단계로 샘플링됩니다.
+    for _ in range(256):
+        z_T = base_model(z_T)
+        
+    # 128×128→256×256 SR 확산 모델은 DDPM을 사용하여 128 단계로 샘플링됩니다.
+    for _ in range(128):
+        z_T = sr_model_256(z_T)
+        
+    # 최종 256×256→1024×1024 SR 확산 모델은 DDIM을 사용하여 32 단계로 샘플링됩니다.
+    # (참고: 원래 코드에는 DDIM 구현이 제공되지 않으므로 이것은 플레이스홀더입니다.)
+    for _ in range(32):
+        z_T = sr_model_1024(z_T)
+        
+    # 훈련된 모델을 사용하여 노이즈에서 이미지를 생성합니다.
+    generated_image = model(z_T, Jp.view(-1))
+
+# 훈련 중 노이즈 조절 수준은 균일 분포 U([0, 1])에서 샘플링됩니다.
+conditioning_noise_level = torch.rand(1).item()
+
+# 추론 시에는 그리드 검색을 기반으로 상수 값으로 설정됩니다. [37]을 따릅니다.
+# (참고: 그리드 검색에서의 정확한 값이 제공되지 않았으므로 이것은 플레이스홀더입니다.)
+inference_noise_level = 0.5
+
+# 모든 세 단계에 대한 가이드 가중치는 2로 설정됩니다.
+guidance_weight = 2
