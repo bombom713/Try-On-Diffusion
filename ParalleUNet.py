@@ -1,90 +1,38 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import json
-from PIL import Image
-import torchvision.transforms as transforms
-
-class PoseEmbedding(nn.Module):
-    def __init__(self, pose_dim, embedding_dim):
-        super(PoseEmbedding, self).__init__()
-        self.fc = nn.Linear(pose_dim, embedding_dim)
-        
-    def forward(self, pose):
-        return self.fc(pose)
-
-def load_pose_from_json(json_path):
-    with open(json_path, 'r') as f:
-        pose_data = json.load(f)
-    # Assuming the JSON contains a list of pose coordinates
-    pose_vector = torch.tensor(pose_data).float()
-    return pose_vector
-
-person_pose = load_pose_from_json(json_path_person)
-garment_pose = load_pose_from_json(json_path_garment)
-
-pose_dim = person_pose.size(-1)  # Assuming person and garment have the same pose dimension
-embedding_dim = 128  # You can adjust this value
-
-person_pose_embedding_module = PoseEmbedding(pose_dim, embedding_dim)
-garment_pose_embedding_module = PoseEmbedding(pose_dim, embedding_dim)
-
-person_pose_embedding = person_pose_embedding_module(person_pose)
-garment_pose_embedding = garment_pose_embedding_module(garment_pose)
+import torch.optim as optim
 
 class FiLM(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, num_features):
         super(FiLM, self).__init__()
-        self.gamma = nn.Parameter(torch.ones(1, channels, 1, 1))
-        self.beta = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.gamma = nn.Parameter(torch.ones(1, num_features, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, num_features, 1, 1))
 
     def forward(self, x):
         return self.gamma * x + self.beta
 
-class ResBlk(nn.Module):
-    def __init__(self, channels):
-        super(ResBlk, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(channels, channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        )
-        self.film = FiLM(channels)
+class CrossAttention(nn.Module):
+    def __init__(self, d):
+        super(CrossAttention, self).__init__()
+        self.scale = d ** 0.5
 
-    def forward(self, x):
-        return x + self.film(self.conv(x))
+    def forward(self, Q, K, V):
+        attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)) / self.scale, dim=-1)
+        return torch.matmul(attention, V)
 
 class SelfAttention(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, in_channels):
         super(SelfAttention, self).__init__()
-        self.query = nn.Conv2d(channels, channels // 8, kernel_size=1)
-        self.key = nn.Conv2d(channels, channels // 8, kernel_size=1)
-        self.value = nn.Conv2d(channels, channels, kernel_size=1)
+        self.query = nn.Conv2d(in_channels, in_channels // 8, 1)
+        self.key = nn.Conv2d(in_channels, in_channels // 8, 1)
+        self.value = nn.Conv2d(in_channels, in_channels, 1)
         self.gamma = nn.Parameter(torch.zeros(1))
 
     def forward(self, x):
         Q = self.query(x)
         K = self.key(x)
         V = self.value(x)
-
-        attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)) / (x.size(-1)**0.5), dim=-1)
-        out = torch.matmul(attention, V)
-        return self.gamma * out + x
-
-class CrossAttention(nn.Module):
-    def __init__(self, channels):
-        super(CrossAttention, self).__init__()
-        self.query = nn.Conv2d(channels, channels // 8, kernel_size=1)
-        self.key = nn.Conv2d(channels, channels // 8, kernel_size=1)
-        self.value = nn.Conv2d(channels, channels, kernel_size=1)
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x, y):
-        Q = self.query(x)
-        K = self.key(y)
-        V = self.value(y)
-
-        attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)) / (x.size(-1)**0.5), dim=-1)
+        attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)), dim=-1)
         out = torch.matmul(attention, V)
         return self.gamma * out + x
 
@@ -94,217 +42,383 @@ class CLIP1DAttentionPooling(nn.Module):
         self.attention = nn.Linear(embedding_dim, 1)
 
     def forward(self, x):
-        attention_weights = F.softmax(self.attention(x), dim=1)
-        return torch.sum(x * attention_weights, dim=1)
+        attention_weights = F.softmax(self.attention(x), dim=-1)
+        return torch.sum(x * attention_weights, dim=-1)    
     
-class PersonUNet(nn.Module):
-    def __init__(self, in_channels, out_channels, embedding_dim):
-        super(PersonUNet, self).__init__()
-
-        self.pose_embedding_module = PoseEmbedding(pose_dim, embedding_dim)
-        self.clip_pooling = CLIP1DAttentionPooling(embedding_dim)
-
-        # Initial 3x3 convolution before encoding
-        self.init_conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
-
-        # Contracting Path with FiLM, ResBlk, SelfAttention, and CrossAttention
-        self.enc1 = nn.Sequential(
-            self.conv_block(in_channels, 64),
-            FiLM(64),
-            ResBlk(64),
-            SelfAttention(64)
-        )
-        self.enc2 = nn.Sequential(
-            self.conv_block(64, 128),
-            *[ResBlk(128) for _ in range(3)],  # Resolution 128 repeated 3 times
-            FiLM(128)
-        )
-        self.enc3 = nn.Sequential(
-            self.conv_block(128, 256),
-            *[ResBlk(256) for _ in range(2)],  # Resolution 256 repeated 2 times
-            FiLM(256)
-        )
-        self.enc4 = self.conv_block(256, 512)
-
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        # Cross Attention at resolution 16 repeated 7 times
-        self.cross_attentions = nn.ModuleList([CrossAttention(64, 64) for _ in range(7)])
-
-        # Expanding Path
-        self.up3 = nn.Sequential(
-            self.upconv_block(512, 256),
-            *[ResBlk(256) for _ in range(2)],  # Resolution 64 repeated 4 times
-            FiLM(256)
-        )
-        self.up2 = nn.Sequential(
-            self.upconv_block(256, 128),
-            *[ResBlk(128) for _ in range(3)],  # Resolution 32 repeated 7 times
-            FiLM(128)
-        )
-        self.up1 = self.upconv_block(128, 64)
-
-        # 3x3 convolution after decoding
-        self.final_conv = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-
-        self.out_conv = nn.Conv2d(64, out_channels, kernel_size=1)
-
-    def conv_block(self, in_channels, out_channels):
-        block = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
-        )
-        return block
-
-    def upconv_block(self, in_channels, out_channels):
-        block = nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
-            nn.ReLU(inplace=True)
-        )
-        return block
-
-    def forward(self, Ia, zt, person_pose, garment_pose, garment_features=None):
-        # Concatenate Ia and zt along the channel dimension
-        x = torch.cat([Ia, zt], dim=1)
-
-        person_pose_embedding = self.pose_embedding_module(person_pose)
-        garment_pose_embedding = self.pose_embedding_module(garment_pose)
-
-        # Fusing pose embeddings using attention mechanism
-        fused_pose_embedding = person_pose_embedding + garment_pose_embedding
-        fused_pose_embedding = self.clip_pooling(fused_pose_embedding)
-
-        x = self.init_conv(x)  # Initial convolution before encoding
-
-        # Contracting Path
-        enc1 = self.enc1(x)
-        if garment_features:
-            enc1 = self.cross_attentions[0](enc1, garment_features[0])
-        enc2 = self.enc2(self.pool(enc1))
-        if garment_features:
-            enc2 = self.cross_attentions[1](enc2, garment_features[1])
-        enc3 = self.enc3(self.pool(enc2))
-        if garment_features:
-            enc3 = self.cross_attentions[2](enc3, garment_features[2])
-        enc4 = self.enc4(self.pool(enc3))
-        if garment_features:
-            enc4 = self.cross_attentions[3](enc4, garment_features[3])
-
-        # Expanding Path with skip connections
-        dec3 = self.up3(enc4)
-        dec3 = torch.cat([dec3, enc3], dim=1)
-        dec2 = self.up2(dec3)
-        dec2 = torch.cat([dec2, enc2], dim=1)
-        dec1 = self.up1(dec2)
-        dec1 = torch.cat([dec1, enc1], dim=1)
-        dec1 = self.final_conv(dec1)  # 3x3 convolution after decoding
-
-        return self.out_conv(dec1)
-
-class GarmentUNet(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(GarmentUNet, self).__init__()
-
-        # Initial 3x3 convolution before encoding
-        self.init_conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
-
-        # Contracting Path with FiLM and ResBlk (SelfAttention and CrossAttention removed)
-        self.enc1 = nn.Sequential(
-            self.conv_block(in_channels, 64),
-            FiLM(64),
-            ResBlk(64)
-        )
-        self.enc2 = nn.Sequential(
-            self.conv_block(64, 128),
-            *[ResBlk(128) for _ in range(3)],  # Resolution 128 repeated 3 times
-            FiLM(128)
-        )
-        self.enc3 = nn.Sequential(
-            self.conv_block(128, 256),
-            *[ResBlk(256) for _ in range(2)],  # Resolution 256 repeated 2 times
-            FiLM(256)
-        )
-        self.enc4 = self.conv_block(256, 512)
-
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        # Expanding Path (CrossAttention removed)
-        self.up3 = nn.Sequential(
-            self.upconv_block(512, 256),
-            *[ResBlk(256) for _ in range(2)],  # Resolution 64 repeated 4 times
-            FiLM(256)
-        )
-        self.up2 = nn.Sequential(
-            self.upconv_block(256, 128),
-            *[ResBlk(128) for _ in range(3)],  # Resolution 32 repeated 7 times
-            FiLM(128)
-        )
-        self.up1 = self.upconv_block(128, 64)
-
-        # 3x3 convolution after decoding
-        self.final_conv = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-
-        self.out_conv = nn.Conv2d(64, out_channels, kernel_size=1)
-
-    def conv_block(self, in_channels, out_channels):
-        block = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
-        )
-        return block
-
-    def upconv_block(self, in_channels, out_channels):
-        block = nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
-            nn.ReLU(inplace=True)
-        )
-        return block
-
-    def forward(self, Ic):
-        x = self.init_conv(Ic)
-
-        # Contracting Path
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(self.pool(enc1))
-        enc3 = self.enc3(self.pool(enc2))
-        enc4 = self.enc4(self.pool(enc3))
-
-        # Extracting features at resolution 16 for the conditional pathway
-        conditional_features = enc4
-
-        # Expanding Path with skip connections
-        dec3 = self.up3(enc4)
-        dec3 = torch.cat([dec3, enc3], dim=1)
-        dec2 = self.up2(dec3)
-        dec2 = torch.cat([dec2, enc2], dim=1)
-
-        # Return all the feature maps for cross attention with PersonUNet (if needed in the future)
-        return [enc1, enc2, enc3, enc4, dec2]
-    
-class TryOnDiffusionModel(nn.Module):
+class ParallelUNet128(nn.Module):
     def __init__(self):
-        super(TryOnDiffusionModel, self).__init__()
+        super(ParallelUNet128, self).__init__()
         
-        self.person_model = PersonUNet(in_channels=2, out_channels=1, embedding_dim=128)  # Ia와 zt 모두 1 채널이라고 가정
-        self.garment_model = GarmentUNet(in_channels=1, out_channels=1)  # Ic가 1 채널이라고 가정
-        self.super_resolution_unet = PersonUNet(in_channels=3, out_channels=1, embedding_dim=128)  # 256x256 Parallel-UNet
+        self.clip_pooling = CLIP1DAttentionPooling(512)
 
-    def forward(self, Ia, zt, person_pose, garment_pose, Ic):
-        garment_features = self.garment_model(Ic)
-        I_128 = self.person_model(Ia, zt, person_pose, garment_pose, garment_features)
+        # Person-UNet
+        self.person_unet = nn.Sequential(
+            nn.Conv2d(6, 64, 3, padding=1),  # zt와 Ia의 연결
+            FiLM(64),
+            ResidualBlock(64, 64),
+            ResidualBlock(64, 64),
+            ResidualBlock(64, 64),
+            nn.MaxPool2d(2, 2),
+            FiLM(64),
+            ResidualBlock(64, 128),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128),
+            nn.MaxPool2d(2, 2),
+            FiLM(128),
+            ResidualBlock(128, 256),
+            SelfAttention(256),
+            CrossAttention(256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            nn.MaxPool2d(2, 2),
+            FiLM(256),
+            ResidualBlock(256, 512),
+            SelfAttention(512),
+            CrossAttention(512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            FiLM(512),
+            ResidualBlock(512, 256),
+            SelfAttention(256),
+            CrossAttention(256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            FiLM(256),
+            ResidualBlock(256, 128),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            FiLM(128),
+            ResidualBlock(128, 64),
+            ResidualBlock(64, 64),
+            ResidualBlock(64, 64),
+            nn.Conv2d(64, 3, 3, padding=1)
+        )
         
-        I_128_upsampled = F.interpolate(I_128, scale_factor=2, mode='bilinear', align_corners=True)
-        concatenated_input = torch.cat([I_128_upsampled, Ia, Ic], dim=1)  # Concatenate along the channel dimension
-        I_256 = self.super_resolution_unet(concatenated_input)
+        # Garment-UNet
+        self.garment_unet = nn.Sequential(
+            nn.Conv2d(3, 64, 3, padding=1),  # Initial 3x3 conv for Ic
+            FiLM(64),
+            ResidualBlock(64, 64),
+            ResidualBlock(64, 64),
+            ResidualBlock(64, 64),  # FiLM and ResBlk at resolution 128 repeated 3 times
+            FiLM(64),
+            ResidualBlock(64, 128),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128),  # FiLM and ResBlk at resolution 64 repeated 4 times
+            FiLM(128),
+            ResidualBlock(128, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),  # FiLM and ResBlk at resolution 32 repeated 6 times
+            FiLM(256),
+            ResidualBlock(256, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 512),  # FiLM and ResBlk at resolution 16 repeated 7 times
+            # Decoding part
+            FiLM(512),
+            ResidualBlock(512, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),  # FiLM and ResBlk at resolution 32 repeated 6 times
+            FiLM(256),
+            ResidualBlock(256, 128),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128)   # FiLM and ResBlk at resolution 16 repeated 7 times
+        )
+
+        # Jp와 Jg의 임베딩
+        self.jp_embedding = nn.Linear(Jp.size(1), 512)
+        self.jg_embedding = nn.Linear(Jg.size(1), 512)
+
+    def forward(self, Ia, zt, Ic):
+        # zt와 Ia 연결
+        x = torch.cat([zt, Ia], dim=1)
         
-        return I_256
+        # Person-UNet
+        person_features = self.person_unet(x)
+        
+        # Garment-UNet
+        garment_features = self.garment_unet(Ic)
+        
+        # Jp와 Jg의 임베딩
+        jp_embed = self.jp_embedding(Jp)
+        jg_embed = self.jg_embedding(Jg)
+        
+        # Cross Attention
+        fused_features = self.cross_attention(person_features, jp_embed, jg_embed)
+        
+        fused_embedding = jp_embed + jg_embed
+        fused_embedding_pooled = self.clip_pooling(fused_embedding)
+        
+        # Skip connections and feature fusion
+        combined_features = person_features + garment_features + fused_features
+        
+        return combined_features
 
-# Example usage:
-output = TryOnDiffusionModel()
-I_256_result = output(Ia, zt, person_pose, garment_pose, Ic)
+    
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(ResidualBlock, self).__init__()
+        self.main = nn.Sequential(
+            nn.GroupNorm(min(32, in_channels // 4), in_channels),
+            nn.SiLU(), 
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(min(32, out_channels // 4), out_channels),
+            nn.SiLU(),  
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        )
+        self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
-print(output)
+    def forward(self, x):
+        return self.skip(x) + self.main(x)
+
+class UNetBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UNetBlock, self).__init__()
+        self.down = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1),
+            ResidualBlock(out_channels, out_channels)
+        )
+        self.up = nn.Sequential(
+            ResidualBlock(out_channels, out_channels),
+            nn.ConvTranspose2d(out_channels, in_channels, kernel_size=4, stride=2, padding=1)
+        )
+
+    def forward(self, x):
+        x = self.down(x)
+        x = self.up(x)
+        return x
+
+class ParallelUNet256(nn.Module):
+    def __init__(self):
+        super(ParallelUNet256, self).__init__()
+        self.encoder = nn.Sequential(
+            UNetBlock(3, 128),
+            FiLM(128), 
+            UNetBlock(128, 128),
+            FiLM(128), 
+            UNetBlock(128, 256),
+            FiLM(256),
+            UNetBlock(256, 512),
+            FiLM(512), 
+            UNetBlock(512, 1024)
+        )
+        self.decoder = nn.Sequential(
+            UNetBlock(1024, 512),
+            FiLM(512), 
+            UNetBlock(512, 256),
+            FiLM(256), 
+            UNetBlock(256, 128),
+            FiLM(128),  
+            UNetBlock(128, 128),
+            FiLM(128),  
+            UNetBlock(128, 3)
+        )
+        self.cross_attention = CrossAttention(512)
+
+    def forward(self, Ia, I_128_tr, Ic):
+        I_128_tr_upsampled = F.interpolate(I_128_tr, scale_factor=2, mode='bilinear', align_corners=True)
+        x = torch.cat([Ia, I_128_tr_upsampled], dim=1)
+        x = self.encoder(x)
+        x = self.cross_attention(x, Ic, Ic)
+        x = self.decoder(x)
+        return x
+    
+# 기본 확산 모델
+class BaseDiffusionModel(nn.Module):
+    def __init__(self):
+        super(BaseDiffusionModel, self).__init__()
+        # 128x128 Parallel-UNet 아키텍처 정의
+        # 간단하게 기본 피드포워드 네트워크를 사용합니다.
+        self.model = nn.Sequential(
+            nn.Linear(2560 * 720 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128 * 128 * 3)
+        )
+    
+    def forward(self, ctryon):
+        # 순전파 구현
+        return self.model(ctryon)
+
+# 128x128에서 256x256으로의 SR 확산 모델
+class SRDiffusionModel256(nn.Module):
+    def __init__(self):
+        super(SRDiffusionModel256, self).__init__()
+        # 256x256 Parallel-UNet 아키텍처 정의
+        self.model = nn.Sequential(
+            nn.Linear(128 * 128 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256 * 256 * 3)
+        )
+    
+    def forward(self, I_128, ctryon):
+        # 순전파 구현
+        return self.model(torch.cat([I_128, ctryon], dim=1))
+
+# 256x256에서 1024x1024로의 SR 확산 모델
+class SRDiffusionModel1024(nn.Module):
+    def __init__(self):
+        super(SRDiffusionModel1024, self).__init__()
+        # Efficient-UNet 아키텍처 정의
+        self.model = nn.Sequential(
+            nn.Linear(256 * 256 * 3, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 1024 * 1024 * 3)
+        )
+    
+    def forward(self, I_256):
+        # 순전파 구현
+        return self.model(I_256)
+
+class DiffusionModel(nn.Module):
+    def __init__(self):
+        super(DiffusionModel, self).__init__()
+        
+        self.model = nn.Sequential(
+            nn.Linear(2560 * 720 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 2560 * 720 * 3)
+        )
+        
+        # Base Diffusion Model for 128x128
+        self.base_model = BaseDiffusionModel()
+        
+        # Warp Diffusion Model for 128x128
+        self.warp_model = nn.Sequential(
+            nn.Linear(2560 * 720 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128 * 128 * 3)
+        )
+        
+        # Blend Diffusion Model for 128x128
+        self.blend_model = nn.Sequential(
+            nn.Linear(2560 * 720 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128 * 128 * 3)
+        )
+        
+        # SR Diffusion Model for 256x256
+        self.sr_model_256 = SRDiffusionModel256()
+        
+        # SR Diffusion Model for 1024x1024
+        self.sr_model_1024 = SRDiffusionModel1024()
+        
+        
+        # 128x128 Parallel-UNet
+        self.parallel_unet_128 = ParallelUNet128()
+        
+        # 256x256 Parallel-UNet
+        self.parallel_unet_256 = ParallelUNet256()
+
+    def forward(self, Ia, Jp, Ic, Jg):
+        # Base Diffusion Model
+        I_128 = self.base_model(Ia.view(-1))
+        
+        # Warp Diffusion Model
+        Iwc = self.warp_model(Ic, Jp, Jg)
+        
+        # Blend Diffusion Model
+        I_128_tr = self.blend_model(Iwc, Ia, Jp, Jg)
+        
+        # SR Diffusion Model 256x256
+        I_256 = self.sr_model_256(I_128, Ia.view(-1))
+        
+        # 128x128 Parallel-UNet
+        I_128 = self.parallel_unet_128(Ia, I_128_tr, Ic)
+        
+        # 256x256 Parallel-UNet
+        I_256 = self.parallel_unet_256(Ia, I_128, Ic)
+        
+        # SR Diffusion Model 1024x1024
+        I_1024 = self.sr_model_1024(I_256)
+        
+        return I_1024
+
+# Hyperparameters
+epochs = 10
+batch_size = 256
+iterations = 500000
+initial_lr = 0
+final_lr = 1e-4
+warmup_steps = 10000
+conditioning_dropout_rate = 0.1
+
+# Initialize model and optimizer
+base_model = BaseDiffusionModel()
+sr_model_256 = SRDiffusionModel256()
+sr_model_1024 = SRDiffusionModel1024()
+model = DiffusionModel()
+optimizer = optim.Adam(model.parameters(), lr=final_lr)
+
+# Learning rate scheduler
+def lr_schedule(step):
+    if step < warmup_steps:
+        return initial_lr + (final_lr - initial_lr) * (step / warmup_steps)
+    return final_lr
+
+# Training loop
+for iteration in range(iterations):
+    for Ia, Jp, Ic, Jg in ctryon:  # Assuming ctryon is a dataloader or iterable
+        # Apply conditioning dropout
+        if torch.rand(1).item() < conditioning_dropout_rate:
+            Ia = torch.zeros_like(Ia)
+            Jp = torch.zeros_like(Jp)
+            Ic = torch.zeros_like(Ic)
+            Jg = torch.zeros_like(Jg)
+        
+        # Forward pass
+        output = model(Ia, Jp, Ic, Jg)
+        
+        # Compute loss using the denoising score matching objective
+        alpha_t = 0.5  # Dummy value, needs to be defined properly
+        sigma_t = 0.5  # Dummy value, needs to be defined properly
+        epsilon = torch.randn_like(Ia.view(-1))
+        z_t = alpha_t * Ia.view(-1) + sigma_t * epsilon
+        loss = ((model(z_t, Jp.view(-1)) - Ia.view(-1)) ** 2).mean()
+        
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        # Update learning rate
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr_schedule(iteration)
+
+    if iteration % 1000 == 0:  # Print loss every 1000 iterations
+        print(f"Iteration [{iteration}/{iterations}], Loss: {loss.item():.4f}")
+
+# Inference
+with torch.no_grad():
+    z_T = torch.randn(2560 * 720 * 3)  # Gaussian noise
+    generated_image = model(z_T, Jp.view(-1))  # Use the trained model to generate an image from the noise
