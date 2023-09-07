@@ -1,0 +1,549 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import json
+from PIL import Image
+import torchvision.transforms as transforms
+import torch.optim as optim
+import matplotlib.pyplot as plt
+
+def Ip_Ic(image_path):
+    image = Image.open(image_path).convert('RGB')
+    transform = transforms.Compose([
+        transforms.ToTensor()
+    ])
+    return transform(image)
+
+image_path_person = './Model-Image/1008_A001_000.jpg'
+image_path_garment = './Item-Image/1008002_F.jpg'
+
+# 이미지 로드
+Ip = Ip_Ic(image_path_person)
+Ic = Ip_Ic(image_path_garment)
+
+# print(Ip)
+# print(Ic)
+
+def sp_sg(data):
+    segmentations = []
+    if isinstance(data, list):
+        for item in data:
+            segmentations.append(torch.tensor(item).float())
+    else:
+        for key in data:
+            if key == 'segmentation':
+                if isinstance(data[key], list):
+                    for item in data[key]:
+                        segmentations.append(torch.tensor(item).float())
+                else:
+                    segmentations.append(torch.tensor(data[key]).float())
+            elif isinstance(data[key], dict):
+                segmentations.extend(sp_sg(data[key]))
+    return segmentations
+
+spjson = "./Model-Parse/1008_A001_000.json"
+sgjson = "./Item-Parse/1008002_F.json"
+
+with open(spjson, 'r') as f:
+    data_sp = json.load(f)
+Sp = sp_sg(data_sp)[0]  # person human parsing map
+
+with open(sgjson, 'r') as f:
+    data_sg = json.load(f)
+Sg = sp_sg(data_sg)[0]  # garment human parsing map
+
+# print(Sp, Sg)
+
+def jp_jg(data):
+    landmarks = []
+    if isinstance(data, list):
+        landmarks.append(torch.tensor(data).float())
+    else:
+        for key in data:
+            if key == 'landmarks':
+                landmarks.append(torch.tensor(data[key]).float())
+            elif isinstance(data[key], dict):
+                landmarks.extend(jp_jg(data[key]))
+    return landmarks
+
+jpjson = "./Model-Pose/1008_A001_000.json"
+jgjson = "./Item-Pose/1008002_F.json"
+
+with open(jpjson, 'r') as f:
+    data_jp = json.load(f)
+Jp = jp_jg(data_jp)[0]  # human pose keypoints
+
+with open(jgjson, 'r') as f:
+    data_jg = json.load(f)
+Jg = jp_jg(data_jg)[0]  # garment pose keypoints
+
+# print(Jp)
+# print(Jg)
+
+def Ia(Ip, Sp, Jp):
+    # Generate masks for head, hands, and lower body based on Sp and Jp
+    # For simplicity, we're returning dummy masks. This needs to be implemented properly.
+    head_mask = torch.zeros_like(Sp)
+    hands_mask = torch.zeros_like(Sp)
+    lower_body_mask = torch.zeros_like(Sp)
+
+    masked_person = Ip * (1 - Sp)
+    clothing_agnostic = masked_person + Ip * head_mask + Ip * hands_mask + Ip * lower_body_mask
+
+    return clothing_agnostic
+
+# Normalize pose keypoints to the range of [0, 1]
+Jp = (Jp - Jp.min()) / (Jp.max() - Jp.min())
+Jg = (Jg - Jg.min()) / (Jg.max() - Jg.min())
+
+# Assuming Ip and Ic are given
+Sp = F.interpolate(Sp.unsqueeze(0).unsqueeze(0), size=(Ip.size(1), Ip.size(2)), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+Sg = F.interpolate(Sg.unsqueeze(0).unsqueeze(0), size=(Ic.size(1), Ic.size(2)), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+
+Ia = Ia(Ip, Sp, Jp)
+Ic = Ic * Sg  # Segment out the garment using the parsing map
+
+zt = torch.randn_like(Ia)
+
+ctryon = (Ia, Jp, Ic, Jg)
+
+print(ctryon)
+
+class FiLM(nn.Module):
+    def __init__(self, num_features):
+        super(FiLM, self).__init__()
+        self.gamma = nn.Parameter(torch.ones(1, num_features, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, num_features, 1, 1))
+
+    def forward(self, x):
+        return self.gamma * x + self.beta
+    
+    class CrossAttention(nn.Module):
+    def __init__(self, d):
+        super(CrossAttention, self).__init__()
+        self.scale = d ** 0.5
+        self.query = nn.Linear(d, d)
+        self.key = nn.Linear(d, d)
+        self.value = nn.Linear(d, d)
+
+    def forward(self, Q, K, V):
+        Q = self.query(Q)
+        K = self.key(K)
+        V = self.value(V)
+        attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)) / self.scale, dim=-1)
+        return torch.matmul(attention, V)
+    
+    class SelfAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(SelfAttention, self).__init__()
+        self.query = nn.Conv2d(in_channels, in_channels // 8, 1)
+        self.key = nn.Conv2d(in_channels, in_channels // 8, 1)
+        self.value = nn.Conv2d(in_channels, in_channels, 1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.scale = in_channels ** 0.5  # 스케일링을 위한 변수 추가
+
+    def forward(self, x):
+        Q = self.query(x)
+        K = self.key(x)
+        V = self.value(x)
+        attention = F.softmax(torch.matmul(Q, K.transpose(-2, -1)) / self.scale, dim=-1)  # 스케일링 적용
+        out = torch.matmul(attention, V)
+        return self.gamma * out + x
+    
+    class CLIP1DAttentionPooling(nn.Module):
+    def __init__(self, embedding_dim):
+        super(CLIP1DAttentionPooling, self).__init__()
+        self.attention = nn.Linear(embedding_dim, 1)
+
+    def forward(self, x):
+        attention_weights = F.softmax(self.attention(x), dim=-1)
+        return torch.sum(x * attention_weights, dim=-1)
+    
+    import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class UNetEncoder(nn.Module):
+    def __init__(self, resolutions, repeats, channels, with_attention):
+        super(UNetEncoder, self).__init__()
+        layers = []
+        for res, rep, ch, att in zip(resolutions, repeats, channels, with_attention):
+            for _ in range(rep):
+                layers.append(FiLM(ch))
+                layers.append(ResidualBlock(ch, ch))
+                if att:
+                    layers.append(CrossAttention(ch))
+                    layers.append(SelfAttention(ch))
+            layers.append(nn.MaxPool2d(2, 2))
+        self.encoder = nn.Sequential(*layers[:-1])  # 마지막 MaxPool 제거
+
+    def forward(self, x):
+        return self.encoder(x)
+
+class UNetDecoder(nn.Module):
+    def __init__(self, resolutions, repeats, channels, with_attention, pose_embedding_dim):
+        super(UNetDecoder, self).__init__()
+        self.pose_embedding_dim = pose_embedding_dim
+        self.layers = []
+        
+        for res, rep, ch, att in zip(resolutions, repeats, channels, with_attention):
+            for _ in range(rep):
+                self.layers.append(FiLM(ch + self.pose_embedding_dim))  # 포즈 임베딩을 고려하여 FiLM에 차원 추가
+                self.layers.append(ResidualBlock(ch, ch))
+                if att:
+                    self.layers.append(CrossAttention(ch))
+                    self.layers.append(SelfAttention(ch))
+            self.layers.append(nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True))
+        
+        self.layers = self.layers[:-1]  # 마지막 Upsample 제거
+
+    def forward(self, x, pose_embedding):
+        # 포즈 임베딩을 feature map의 각 위치에 반복하여 추가
+        pose_embedding = pose_embedding.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.size(2), x.size(3))
+        
+        for layer in self.layers:
+            if isinstance(layer, FiLM):
+                x = torch.cat([x, pose_embedding], dim=1)
+            x = layer(x)
+        
+        return x
+
+class ParallelUNet128(nn.Module):
+    def __init__(self):
+        super(ParallelUNet128, self).__init__()
+        
+        resolutions = [128, 64, 32, 16]
+        repeats = [3, 4, 6, 7]
+        channels = [64, 128, 256, 512]
+        with_attention = [False, False, True, True]
+        
+        # Pose Embeddings
+        self.pose_embedding_Jp = nn.Linear(64, 64)
+        self.pose_embedding_Jg = nn.Linear(64, 64)
+        
+        # HumanUNet
+        self.human_initial_conv = nn.Conv2d(67, 64, kernel_size=3, padding=1)
+        self.human_encoder = UNetEncoder(resolutions, repeats, channels, with_attention)
+        self.human_decoder = UNetDecoder(resolutions[::-1], repeats[::-1], channels[::-1], with_attention[::-1], pose_embedding_dim=64)
+        self.human_final_conv = nn.Conv2d(64, 3, kernel_size=3, padding=1)
+        
+        # GarmentUNet
+        self.garment_initial_conv = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.garment_encoder = UNetEncoder(resolutions, repeats, channels, with_attention)
+        self.garment_decoder = UNetDecoder(resolutions[:2][::-1], repeats[:2][::-1], channels[:2][::-1], with_attention[:2][::-1])
+
+    def forward(self, z_t, c_tryon, tna):
+        Ia, Jp, Ic, Jg = c_tryon
+        
+        # Pose Embeddings
+        Jp_embedding = self.pose_embedding_Jp(Jp)
+        Jg_embedding = self.pose_embedding_Jg(Jg)
+        pose_info = Jp_embedding + Jg_embedding
+        
+        # GarmentUNet
+        garment_input = self.garment_initial_conv(Ic)
+        g_encoded_32, g_encoded_16 = self.garment_encoder(garment_input)
+        g_decoded_32 = self.garment_decoder(g_encoded_16, g_encoded_32)
+        
+        # HumanUNet
+        human_input = torch.cat([Ia, z_t, g_decoded_32], dim=1)  # garmentUNet의 출력을 입력으로 추가
+        human_input = self.human_initial_conv(human_input)
+        h_encoded_128, h_encoded_64, h_encoded_32, h_encoded_16 = self.human_encoder(human_input)
+        
+        # Integrate pose information and garment features during decoding
+        h_decoded_128 = self.human_decoder(h_encoded_16, h_encoded_32, h_encoded_64, h_encoded_128, pose_info)
+        
+        # Add skip connections from garmentUNet to personUNet
+        h_decoded_128 += g_decoded_32
+        
+        I128_tr = self.human_final_conv(h_decoded_128)
+        
+        return I128_tr
+
+class ParallelUNet256(nn.Module):
+    def __init__(self):
+        super(ParallelUNet256, self).__init__()
+        
+        resolutions = [256, 128, 64, 32, 16]
+        repeats = [2, 3, 4, 7, 7]
+        channels = [128, 256, 512, 1024, 2048]
+        with_attention = [False, False, False, True, True]
+        
+        # Pose Embeddings
+        self.pose_embedding_Jp = nn.Linear(64, 64)
+        self.pose_embedding_Jg = nn.Linear(64, 64)
+        
+        # HumanUNet
+        self.human_initial_conv = nn.Conv2d(131, 128, kernel_size=3, padding=1)
+        self.human_encoder = UNetEncoder(resolutions, repeats, channels, with_attention)
+        self.human_decoder = UNetDecoder(resolutions[::-1], repeats[::-1], channels[::-1], with_attention[::-1])
+        self.human_final_conv = nn.Conv2d(128, 3, kernel_size=3, padding=1)
+        
+        # GarmentUNet
+        self.garment_initial_conv = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.garment_encoder = UNetEncoder(resolutions[:-3], repeats[:-3], channels[:-3], with_attention[:-3])
+        self.garment_decoder = UNetDecoder(resolutions[-3:-2][::-1], repeats[-3:-2][::-1], channels[-3:-2][::-1], with_attention[-3:-2][::-1])
+
+    def forward(self, z_t, c_tryon, tna, I128_tr):
+        Ia, Jp, Ic, Jg = c_tryon
+        I128_tr_upsampled = F.interpolate(I128_tr, scale_factor=2, mode='bilinear', align_corners=True)
+        
+        # Pose Embeddings
+        Jp_embedding = self.pose_embedding_Jp(Jp)
+        Jg_embedding = self.pose_embedding_Jg(Jg)
+        pose_info = Jp_embedding + Jg_embedding
+        
+        # GarmentUNet
+        garment_input = self.garment_initial_conv(Ic)
+        g_encoded_32, g_encoded_16 = self.garment_encoder(garment_input)
+        g_decoded_32 = self.garment_decoder(g_encoded_16)
+        
+        # HumanUNet
+        human_input = torch.cat([Ia, z_t, g_decoded_32], dim=1)  # garmentUNet의 출력을 입력으로 추가
+        human_input = self.human_initial_conv(human_input)
+        h_encoded_256, h_encoded_128, h_encoded_64, h_encoded_32, h_encoded_16 = self.human_encoder(human_input)
+        
+        # Integrate pose information and garment features during decoding
+        h_decoded_256 = self.human_decoder(h_encoded_16, h_encoded_32, h_encoded_64, h_encoded_128, h_encoded_256, pose_info)
+        
+        # Add skip connections from garmentUNet to personUNet
+        h_decoded_256 += g_decoded_32
+        
+        human_output = self.human_final_conv(h_decoded_256)
+        
+        return human_output
+    
+    class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(ResidualBlock, self).__init__()
+        self.main = nn.Sequential(
+            nn.GroupNorm(min(32, in_channels // 4), in_channels),
+            nn.SiLU(), 
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            FiLM(out_channels),  # FiLM 레이어 추가
+            nn.GroupNorm(min(32, out_channels // 4), out_channels),
+            nn.SiLU(),  
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        )
+        self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return self.skip(x) * self.main(x)
+    
+    class UNetBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UNetBlock, self).__init__()
+        self.down = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1),
+            ResidualBlock(out_channels, out_channels)
+        )
+        self.up = nn.Sequential(
+            ResidualBlock(out_channels, out_channels),
+            nn.ConvTranspose2d(out_channels, in_channels, kernel_size=4, stride=2, padding=1)
+        )
+
+    def forward(self, x):
+        x = self.down(x)
+        x = self.up(x)
+        return x
+    
+    # 기본 확산 모델
+class BaseDiffusionModel(nn.Module):
+    def __init__(self):
+        super(BaseDiffusionModel, self).__init__()
+        # 128x128 Parallel-UNet 아키텍처 정의
+        # 간단하게 기본 피드포워드 네트워크를 사용합니다.
+        self.model = nn.Sequential(
+            nn.Linear(2560 * 720 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128 * 128 * 3)
+        )
+    
+    def forward(self, ctryon):
+        # 순전파 구현
+        return self.model(ctryon)
+
+# 128x128에서 256x256으로의 SR 확산 모델
+class SRDiffusionModel256(nn.Module):
+    def __init__(self):
+        super(SRDiffusionModel256, self).__init__()
+        # 256x256 Parallel-UNet 아키텍처 정의
+        self.model = nn.Sequential(
+            nn.Linear(128 * 128 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256 * 256 * 3)
+        )
+    
+    def forward(self, I_128, ctryon):
+        # 순전파 구현
+        return self.model(torch.cat([I_128, ctryon], dim=1))
+
+# 256x256에서 1024x1024로의 SR 확산 모델
+class SRDiffusionModel1024(nn.Module):
+    def __init__(self):
+        super(SRDiffusionModel1024, self).__init__()
+        # Efficient-UNet 아키텍처 정의
+        self.model = nn.Sequential(
+            nn.Linear(256 * 256 * 3, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 1024 * 1024 * 3)
+        )
+    
+    def forward(self, I_256):
+        # 순전파 구현
+        return self.model(I_256)
+
+class DiffusionModel(nn.Module):
+    def __init__(self):
+        super(DiffusionModel, self).__init__()
+        
+        self.model = nn.Sequential(
+            nn.Linear(2560 * 720 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 2560 * 720 * 3)
+        )
+        
+        # Base Diffusion Model for 128x128
+        self.base_model = BaseDiffusionModel()
+        
+        # Warp Diffusion Model for 128x128
+        self.warp_model = nn.Sequential(
+            nn.Linear(2560 * 720 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128 * 128 * 3)
+        )
+        
+        # Blend Diffusion Model for 128x128
+        self.blend_model = nn.Sequential(
+            nn.Linear(2560 * 720 * 3, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128 * 128 * 3)
+        )
+        
+        # SR Diffusion Model for 256x256
+        self.sr_model_256 = SRDiffusionModel256()
+        
+        # SR Diffusion Model for 1024x1024
+        self.sr_model_1024 = SRDiffusionModel1024()
+        
+        
+        # 128x128 Parallel-UNet
+        self.parallel_unet_128 = ParallelUNet128()
+        
+        # 256x256 Parallel-UNet
+        self.parallel_unet_256 = ParallelUNet256()
+
+    def forward(self, Ia, Jp, Ic, Jg):
+        def forward(self, Ia, Jp, Ic, Jg):
+        # 노이즈 이미지 생성
+        noise_image = torch.randn_like(Ia)
+        
+        # 노이즈 이미지와 Ia concat
+        Ia_with_noise = torch.cat([Ia, noise_image], dim=1)
+        
+        # 3x3 conv layer에 입력
+        Ia_with_noise = nn.Conv2d(6, 64, 3, padding=1)(Ia_with_noise)
+        
+        # Base Diffusion Model
+        I_128 = self.base_model(Ia.view(-1))
+        
+        # Warp Diffusion Model
+        Iwc = self.warp_model(Ic, Jp, Jg)
+        
+        # Blend Diffusion Model
+        I_128_tr = self.blend_model(Iwc, Ia, Jp, Jg)
+        
+        # Cross Attention
+        fused_features = self.cross_attention(person_features, garment_features, garment_features)
+        
+        # SR Diffusion Model 256x256
+        I_256 = self.sr_model_256(I_128, Ia.view(-1))
+        
+        # 128x128 Parallel-UNet
+        I_128 = self.parallel_unet_128(Ia, I_128_tr, Ic)
+        
+        
+        # 256x256 Parallel-UNet
+        I_256 = self.parallel_unet_256(Ia, I_128, Ic)
+        
+        return I_256
+
+# Hyperparameters
+epochs = 10
+batch_size = 256
+iterations = 500000
+initial_lr = 0
+final_lr = 1e-4
+warmup_steps = 10000
+conditioning_dropout_rate = 0.1
+
+# Initialize model and optimizer
+base_model = BaseDiffusionModel()
+sr_model_256 = SRDiffusionModel256()
+sr_model_1024 = SRDiffusionModel1024()
+model = DiffusionModel()
+optimizer = optim.Adam(model.parameters(), lr=final_lr)
+
+# Learning rate scheduler
+def lr_schedule(step):
+    if step < warmup_steps:
+        return initial_lr + (final_lr - initial_lr) * (step / warmup_steps)
+    return final_lr
+
+# Training loop
+for iteration in range(iterations):
+    for Ia, Jp, Ic, Jg in ctryon:  # Assuming ctryon is a dataloader or iterable
+        # Apply conditioning dropout
+        if torch.rand(1).item() < conditioning_dropout_rate:
+            Ia = torch.zeros_like(Ia)
+            Jp = torch.zeros_like(Jp)
+            Ic = torch.zeros_like(Ic)
+            Jg = torch.zeros_like(Jg)
+        
+        # Forward pass
+        output = model(Ia, Jp, Ic, Jg)
+        
+        # Compute loss using the denoising score matching objective
+        alpha_t = 0.5  # Dummy value, needs to be defined properly
+        sigma_t = 0.5  # Dummy value, needs to be defined properly
+        epsilon = torch.randn_like(Ia.view(-1))
+        z_t = alpha_t * Ia.view(-1) + sigma_t * epsilon
+        loss = ((model(z_t, Jp.view(-1)) - Ia.view(-1)) ** 2).mean()
+        
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        # Update learning rate
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr_schedule(iteration)
+
+    if iteration % 1000 == 0:  # Print loss every 1000 iterations
+        print(f"Iteration [{iteration}/{iterations}], Loss: {loss.item():.4f}")
+
+# Inference
+with torch.no_grad():
+    # 가우시안 노이즈 zT ∼ N (0, I)
+    z_T = torch.randn(2560 * 720 * 3)
+    
+    # 기본 확산 모델은 DDPM을 사용하여 256 단계로 샘플링됩니다.
+    for _ in range(256):
+        z_T = base_model(z_T)
+        
+    # 128×128→256×256 SR 확산 모델은 DDPM을 사용하여 128 단계로 샘플링됩니다.
+    for _ in range(128):
+        z_T = sr_model_256(z_T)
+        
+    # 최종 256×256→1024×1024 SR 확산 모델은 DDIM을 사용하여 32 단계로 샘플링됩니다.
+    # (참고: 원래 코드에는 DDIM 구현이 제공되지 않으므로 이것은 플레이스홀더입니다.)
+    for _ in range(32):
+        z_T = sr_model_1024(z_T)
+    
+    # 훈련된 모델을 사용하여 노이즈에서 이미지를 생성합니다.
+    generated_image_256 = model(Ia, Jp, Ic, Jg)
+
+# 이미지 출력
+plt.imshow(generated_image_256.permute(1, 2, 0).squeeze().cpu().numpy())
+plt.axis('off')
+plt.show()
