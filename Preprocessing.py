@@ -1,108 +1,99 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import json
 from PIL import Image
 import torchvision.transforms as transforms
+import json
+import torch.nn.functional as F
 
-def Ip_Ic(image_path):
-    image = Image.open(image_path).convert('RGB')
-    transform = transforms.Compose([
-        transforms.ToTensor()
-    ])
-    return transform(image)
+def get_pre():
+    def load_image(image_path, desired_size=(256, 256)):
+        image = Image.open(image_path).convert('RGB')
+        transform = transforms.Compose([
+            transforms.Resize(desired_size),
+            transforms.ToTensor()
+        ])
+        return transform(image).float()
 
-image_path_person = './Model-Image/1008_A001_000.jpg'
-image_path_garment = './Item-Image/1008002_F.jpg'
+    def sp_sg(data):
+        segmentations = []
+        if isinstance(data, list):
+            for item in data:
+                segmentations.append(torch.tensor(item, dtype=torch.float32))
+        else:
+            for key in data:
+                if key == 'segmentation':
+                    if isinstance(data[key], list):
+                        for item in data[key]:
+                            segmentations.append(torch.tensor(item, dtype=torch.float32))
+                    else:
+                        segmentations.append(torch.tensor(data[key], dtype=torch.float32))
+                elif isinstance(data[key], dict):
+                    segmentations.extend(sp_sg(data[key]))
+        return segmentations
 
-# 이미지 로드
-Ip = Ip_Ic(image_path_person)
-Ic = Ip_Ic(image_path_garment)
+    def jp_jg(data):
+        landmarks = []
+        if isinstance(data, list):
+            landmarks.append(torch.tensor(data, dtype=torch.float32))
+        else:
+            for key in data:
+                if key == 'landmarks':
+                    landmarks.append(torch.tensor(data[key], dtype=torch.float32))
+                elif isinstance(data[key], dict):
+                    landmarks.extend(jp_jg(data[key]))
+        return landmarks
 
-# print(Ip)
-# print(Ic)
+    def generate_Ia(Ip, Sp):
+        # Ensure both tensors are of type float32
+        assert Ip.dtype == torch.float32, "Ip tensor must be of type float32."
+        assert Sp.dtype == torch.float32, "Sp tensor must be of type float32."
 
-def sp_sg(data):
-    segmentations = []
-    if isinstance(data, list):
-        for item in data:
-            segmentations.append(torch.tensor(item).float())
-    else:
-        for key in data:
-            if key == 'segmentation':
-                if isinstance(data[key], list):
-                    for item in data[key]:
-                        segmentations.append(torch.tensor(item).float())
-                else:
-                    segmentations.append(torch.tensor(data[key]).float())
-            elif isinstance(data[key], dict):
-                segmentations.extend(sp_sg(data[key]))
-    return segmentations
+        # Resize Sp to match the size of Ip
+        Sp_resized = F.interpolate(Sp.unsqueeze(0).unsqueeze(0), size=Ip.shape[1:], mode='bilinear', align_corners=True).squeeze(0).squeeze(0)
 
-spjson = "./Model-Parse/1008_A001_000.json"
-sgjson = "./Item-Parse/1008002_F.json"
+        masked_person = Ip * (1 - Sp_resized)
+        return masked_person
 
-with open(spjson, 'r') as f:
-    data_sp = json.load(f)
-Sp = sp_sg(data_sp)[0]  # person human parsing map
 
-with open(sgjson, 'r') as f:
-    data_sg = json.load(f)
-Sg = sp_sg(data_sg)[0]  # garment human parsing map
+    image_path_person = './Model-Image/1008_A001_000.jpg'
+    image_path_garment = './Item-Image/1008002_F.jpg'
 
-# print(Sp, Sg)
+    Ip = load_image(image_path_person)
+    Ic = load_image(image_path_garment)
 
-def jp_jg(data):
-    landmarks = []
-    if isinstance(data, list):
-        landmarks.append(torch.tensor(data).float())
-    else:
-        for key in data:
-            if key == 'landmarks':
-                landmarks.append(torch.tensor(data[key]).float())
-            elif isinstance(data[key], dict):
-                landmarks.extend(jp_jg(data[key]))
-    return landmarks
+    spjson = "./Model-Parse/1008_A001_000.json"
+    sgjson = "./Item-Parse/1008002_F.json"
 
-jpjson = "./Model-Pose/1008_A001_000.json"
-jgjson = "./Item-Pose/1008002_F.json"
+    with open(spjson, 'r') as f:
+        data_sp = json.load(f)
+    Sp = sp_sg(data_sp)[0]  # person human parsing map
 
-with open(jpjson, 'r') as f:
-    data_jp = json.load(f)
-Jp = jp_jg(data_jp)[0]  # human pose keypoints
+    with open(sgjson, 'r') as f:
+        data_sg = json.load(f)
+    Sg = sp_sg(data_sg)[0]  # garment human parsing map
 
-with open(jgjson, 'r') as f:
-    data_jg = json.load(f)
-Jg = jp_jg(data_jg)[0]  # garment pose keypoints
+    jpjson = "./Model-Pose/1008_A001_000.json"
+    jgjson = "./Item-Pose/1008002_F.json"
 
-# print(Jp)
-# print(Jg)
+    with open(jpjson, 'r') as f:
+        data_jp = json.load(f)
+    Jp = jp_jg(data_jp)[0]  # human pose keypoints
 
-def Ia(Ip, Sp, Jp):
-    # Generate masks for head, hands, and lower body based on Sp and Jp
-    # For simplicity, we're returning dummy masks. This needs to be implemented properly.
-    head_mask = torch.zeros_like(Sp)
-    hands_mask = torch.zeros_like(Sp)
-    lower_body_mask = torch.zeros_like(Sp)
+    with open(jgjson, 'r') as f:
+        data_jg = json.load(f)
+    Jg = jp_jg(data_jg)[0]  # garment pose keypoints
 
-    masked_person = Ip * (1 - Sp)
-    clothing_agnostic = masked_person + Ip * head_mask + Ip * hands_mask + Ip * lower_body_mask
+    Ia = generate_Ia(Ip, Sp)
+   
+    # Resize Sg to match the size of Ic
+    Sg_resized = F.interpolate(Sg.unsqueeze(0).unsqueeze(0), size=Ic.shape[1:], mode='bilinear', align_corners=True).squeeze(0).squeeze(0)
 
-    return clothing_agnostic
+    # Add channel dimension to Sg_resized
+    Sg_resized = Sg_resized.unsqueeze(0).expand_as(Ic)
 
-# Normalize pose keypoints to the range of [0, 1]
-Jp = (Jp - Jp.min()) / (Jp.max() - Jp.min())
-Jg = (Jg - Jg.min()) / (Jg.max() - Jg.min())
+    assert Ic.size() == Sg_resized.size(), "The sizes of Ic and Sg must be the same."
+    Ic = Ic * Sg_resized  # Segment out the garment using the resized parsing map
+    
+    z_t = torch.randn_like(Ia)
+    ctryon = (Ia, Jp, Ic, Jg)
 
-# Assuming Ip and Ic are given
-Sp = F.interpolate(Sp.unsqueeze(0).unsqueeze(0), size=(Ip.size(1), Ip.size(2)), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
-Sg = F.interpolate(Sg.unsqueeze(0).unsqueeze(0), size=(Ic.size(1), Ic.size(2)), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
-
-Ia = Ia(Ip, Sp, Jp)
-Ic = Ic * Sg  # Segment out the garment using the parsing map
-
-zt = torch.randn_like(Ia)
-
-ctryon = (Ia, Jp, Ic, Jg)
-
-print(ctryon)
+    return ctryon, z_t, Ip
