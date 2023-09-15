@@ -270,14 +270,12 @@ def get_efficientunet_b6():
 def get_efficientunet_b7():
     return EfficientUNet(version="efficientnet_b7")
 
-# Model Initialization
-model = EfficientUNet()
-
+# ----------------------------------------------train 파라미터
 # Optimizer
-optimizer = optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0)
+optimizer = optim.AdamW(model.parameters(), lr=1e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0)  # 논문에서는 Adam을 사용했지만 작성자 GPU 메모리 부족에 따라 AdamW로 진행합니다.
 
-# Cosine annealing scheduler
-T_max = 2500000  # This should be set based on your training epochs
+# Cosine annealing scheduler for 학습의 수렴을 도와주는 역할입니다.
+T_max = 2500000  # 학습 에포크 수에 따라 변하는 하이퍼 파라미터 값입니다.
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max)
 
 # Linear warmup scheduler
