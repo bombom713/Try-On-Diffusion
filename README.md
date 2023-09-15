@@ -7,7 +7,7 @@ ParallelUNet과 Efficient의 결합 train 코드작성 및 debugging은 지호�
 진희님 github: "https://github.com/wlsl6569"<br>
 윤주님 github: "https://github.com/deeplearningb"<br>
 준혁님 github: "https://github.com/Mutoy-choi/Tryondiffusion"<br>
-(Leader) 지호님 github: "https://github.com/capybarajh"<br>
+(PM) 지호님 github: "https://github.com/capybarajh"<br>
 <br>
 <br>
 <br>
