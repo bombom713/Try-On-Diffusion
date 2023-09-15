@@ -1,3 +1,6 @@
+# 이 코드는 프로젝트에서 쓰이지 않았습니다.
+# 추후 업데이트 할 예정입니다.
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
