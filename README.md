@@ -18,4 +18,4 @@ ParallelUNet과 Efficient의 결합 train 코드작성 및 debugging은 지호�
 1. efficientnet을 encoder로 사용하기 때문에 up.conv 레이어를 사용하지 않고 upsampling을 통해 해상도를 상승시킵니다.<br>
 2. 노이즈 조건화 증강(augmentation)은 준혁님이 구현하신 코드의 output을 입력데이터로 받아 적용시킵니다.<br>
 3. attention layer의 bool값을 False로 지정해 완전 합성곱 구조를 구현합니다.<br>
-(Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding 논문에서는 attention layer를 conditional하게 적용한다고 하였습니다. 따라서 논문 구현 코드의 의의를 두기 위해 제거하는 것이 아닌 False로 지정해 완전 합성곱 구조를 구현합니다.)
+(Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding 논문에서는 attention layer를 conditional하게 적용한다고 하였습니다. 따라서 논문 구현 코드의 의의를 두기 위해 attention layer를 제거하는 것이 아닌 False로 지정해 완전 합성곱 구조를 구현합니다.)
