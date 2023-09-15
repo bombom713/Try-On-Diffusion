@@ -10,7 +10,6 @@ TryOnDiffusion_A Tale of Two UNets 논문 탐색 후 Preprocessing과 Parelle UN
 <br>
 <br>
 <br>
-<br>
 Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding 논문 탐색 후 Efficient UNet을 구현해 봤습니다.<br>
 구현해 낸 Efficient UNet은 TryonDiffusion_A Tale of Two UNets에 맞게 하이퍼파라미터를 조정했습니다.<br>
 <br>
