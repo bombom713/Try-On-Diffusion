@@ -1,4 +1,4 @@
-# 준혁님 train코드에 EfficientUNet을 결합하였습니다.
+# 지호님께서 준혁님 train코드에 작성자의 EfficientUNet을 결합하여 debugging하셨습니다.
 # EfficientUNet을 위해 추가된 코드는 주석처리하였습니다.
 
 import torch
