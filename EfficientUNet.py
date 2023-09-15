@@ -270,7 +270,7 @@ def get_efficientunet_b6():
 def get_efficientunet_b7():
     return EfficientUNet(version="efficientnet_b7")
 
-# ----------------------------------------------train 파라미터
+# ----------------------------------------------아래는 train 코드에 적용할 내용입니다.
 optimizer3 = optim.AdamW(model3.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0)
 
 # EfficientUNet에 대한 CosineAnnealing 스케줄러
