@@ -1,3 +1,5 @@
+# 이 코드는 프로젝트에 쓰이지 않았습니다.
+
 import torch
 from PIL import Image
 import torchvision.transforms as transforms
