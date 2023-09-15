@@ -2,6 +2,7 @@
 <br>
 TryOnDiffusion_A Tale of Two UNets 논문 탐색 후 Preprocessing과 Parelle UNet을 구현해 봤습니다. (스스로 학습용)<br>
 <br>
+<br>
 *** 프로젝트에서는 준혁님이 구현하신 ParallelUNet에 작성자의 EfficientUNet을 결합한 형태로 작성했습니다. "https://github.com/Mutoy-choi/Tryondiffusion"
 <br>
 Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding 논문 탐색 후 Efficient UNet을 구현해 봤습니다.<br>
