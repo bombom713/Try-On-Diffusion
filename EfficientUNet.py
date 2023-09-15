@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import timm
+from parallelUNet import ParallelUNet  # ParallelUNet256의 모델의 output을 입력데이터로 쓰기 위해 해당 클래스를 불러옵니다.
 
 
 class Swish(nn.Module):
@@ -39,7 +40,7 @@ class Flatten(nn.Module):
 class ImageToLinear(nn.Module):
     def __init__(self):
         super(ImageToLinear, self).__init__()
-        self.efficient_unet = EfficientUNet()  # image data(2D)를 vector data(1D)로 받을 때 기존에 사용했던 UNet의 종류를 입력해야 하는 것 같습니다.
+        self.efficient_unet = ParallelUNet()  # image data(2D)를 vector data(1D)로 받을 때 기존에 사용했던 UNet의 종류를 입력해야 합니다.
         self.flatten = Flatten()
         self.fc = nn.Linear(256*256*3, 1000)
 
