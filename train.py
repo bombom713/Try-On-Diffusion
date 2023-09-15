@@ -1,145 +1,229 @@
+# 준혁님 train코드에 EfficientUNet을 결합하였습니다.
+# EfficientUNet을 위해 추가된 코드는 주석처리하였습니다.
+
 import torch
-import torch.nn as nn
 import torch.optim as optim
-import logging
-import os
-from tqdm import tqdm
-from preprocessing_최적화 import get_pre
-from model_최적화 import DiffusionModel
+from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torchvision import transforms
+from LightweightParallelUNet import LightweightParallelUNet  # Assuming you have this class defined somewhere
+from parallelUNet import ParallelUNet
+from EfficientUNet import *  # EfficientUNet 클래스를 불러옵니다.
+from Customdataloader import CustomDataset  # Uncomment if CustomDataset is in a separate file
+from torch.cuda.amp import autocast, GradScaler
+import time
 
-# 체크포인트 저장 함수
-def save_checkpoint(epoch, model, optimizer, filename="checkpoint.pth.tar"):
-    state = {
-        'epoch': epoch,
-        'state_dict': model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-    }
-    torch.save(state, filename)
-
-# 체크포인트 불러오기 함수
-def load_checkpoint(model, optimizer, filename="checkpoint.pth.tar"):
-    if os.path.isfile(filename):
-        print(f"=> Loading checkpoint '{filename}'")
-        checkpoint = torch.load(filename)
-        epoch = checkpoint['epoch']
-        model.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        print(f"=> Loaded checkpoint '{filename}' (epoch {epoch})")
-        return epoch
-    else:
-        print(f"=> No checkpoint found at '{filename}'")
-        return None
-
-# Logging 설정
-logging.basicConfig(filename='training.log', level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-
+torch.cuda.empty_cache()
 # Check if CUDA is available
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
-# Hyperparameters
-epochs = 5
-batch_size = 2
-iterations = 100
-initial_lr = 1e-6  # 초기 학습률을 작은 값으로 설정
-final_lr = 1e-4
-warmup_steps = 10000
-conditioning_dropout_rate = 0.1
+# Transformations
+transform = transforms.Compose([
+    transforms.Resize((128, 128)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
+# Initialize dataset and dataloader
+json_file = "trainexample/exampled_json_file.json"
+dataset = CustomDataset(json_file, transform=transform)
+dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True)
 
 # Initialize model and optimizer
-model = DiffusionModel().to(device)
+IMG_CHANNEL = 3
 
-optimizer = optim.Adam(model.parameters(), lr=final_lr)
+EMB_DIM = 51
 
-# Learning rate scheduler
-def lr_schedule(step):
-    if step < warmup_steps:
-        return initial_lr + (final_lr - initial_lr) * (step / warmup_steps)
-    return final_lr
+parallel_config = {
+    'garment_unet': {
+        'dstack': {
+            'blocks': [
+                {
+                    'channels': 128,
+                    'repeat': 3
+                },
+                {
+                    'channels': 256,
+                    'repeat': 4
+                },
+                {
+                    'channels': 512,
+                    'repeat': 6
+                },
+                {
+                    'channels': 1024,
+                    'repeat': 7
+                }]
+        },
+        'ustack': {
+            'blocks': [
+                {
+                    'channels': 1024,
+                    'repeat': 7
+                },
+                {
+                    'channels': 512,
+                    'repeat': 6
+                }]
+        }
+    },
+    'person_unet': {
+        'dstack': {
+            'blocks': [
+                {
+                    'channels': 128,
+                    'repeat': 3
+                },
+                {
+                    'channels': 256,
+                    'repeat': 4
+                },
+                {
+                    'block_type': 'FiLM_ResBlk_Self_Cross',
+                    'channels': 512,
+                    'repeat': 6
+                },
+                {
 
-# Define the loss function
-def denoising_score_matching_loss(predicted, target, alpha_t, sigma_t):
-    epsilon = torch.randn_like(target)
-    z_t = alpha_t * target + sigma_t * epsilon
-    return ((predicted - z_t) ** 2).mean()
+                    'block_type': 'FiLM_ResBlk_Self_Cross',
+                    'channels': 1024,
+                    'repeat': 7
+                }]
+        },
+        'ustack': {
+            'blocks': [
+                {
+                    'block_type': 'FiLM_ResBlk_Self_Cross',
+                    'channels': 1024,
+                    'repeat': 7
+                },
+                {
+                    'block_type': 'FiLM_ResBlk_Self_Cross',
+                    'channels': 512,
+                    'repeat': 6
+                },
+                {
+                    'channels': 256,
+                    'repeat': 4
+                },
+                {
+                    'channels': 128,
+                    'repeat': 3
+                }]
+        }
+    }
+}
+
+# Initialize both models and their optimizers
+model1 = LightweightParallelUNet(EMB_DIM, parallel_config)
+model2 = ParallelUNet(EMB_DIM, parallel_config)  # Assuming you have a ParallelUNet class
+model3 = EfficientUNet()  # EfficientUNet 모델을 사용합니다.
+
+optimizer1 = optim.AdamW(model1.parameters(), lr=0.0001)
+optimizer2 = optim.AdamW(model2.parameters(), lr=0.0001)
+optimizer3 = optim.AdamW(model3.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0)  # AdamW 옵티마이저에 들어가는 인자의 차이가 있습니다.
+
+# EfficientUNet에 대한 CosineAnnealing 스케줄러
+T_max = 2500000  # 학습 에포크 수에 따라 변하는 하이퍼 파라미터 값입니다.
+scheduler3 = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer3, T_max=T_max)
+
+# EfficientUNet에 대한 Linear warmup 스케줄러
+warmup_steps = 10000
+lr_lambda = lambda epoch: min(1.0, epoch / warmup_steps)
+warmup_scheduler3 = torch.optim.lr_scheduler.LambdaLR(optimizer3, lr_lambda)
+
+criterion = torch.nn.MSELoss()  # Mean Squared Error Loss
+
+# Move both models to the GPU
+model1.to(device)
+model2.to(device)
+model3.to(device)  # EfficientUNet 모델을 GPU를 사용해 처리합니다.
+
+# Initialize the gradient scaler for fp16
+scaler = GradScaler()
+
+# Define the number of steps for gradient accumulation
+accumulation_steps = 12  # You can adjust this value
+
 
 # Training loop
-ctryon, z_t, Ip = get_pre()
-Ia, Jp, Ic, Jg = ctryon
+for epoch in range(10):  # 10 epochs
+    epoch_start_time = time.time()
+    print(epoch_start_time)
+    epoch_loss = 0.0
+    num_batches = 0
 
-# Save the original Ia for visualization later
-Ia_original = Ia.clone()
+    optimizer1.zero_grad(set_to_none=True)
+    optimizer2.zero_grad(set_to_none=True)
+    optimizer3.zero_grad(set_to_none=True)  # EfficientUNet 모델의 옵티마이저 사용을 위해 초기화합니다.
 
-# Move data to GPU
-Ia = Ia.to(device)
-Jp = Jp.to(device)
-Ic = Ic.to(device)
-Jg = Jg.to(device)
-z_t = z_t.to(device)
+    # Wrap your dataloader with tqdm for a progress bar
+    for i, (combined_img, person_pose, garment_pose, ic_img, org_img) in enumerate(dataloader):
 
-# 학습 전에 체크포인트 불러오기 (필요한 경우)
-start_epoch = load_checkpoint(model, optimizer)
-if start_epoch is None:
-    start_epoch = 0
+        # Move data to the GPU and convert to fp16
+        combined_img = combined_img.to(device)
+        person_pose = person_pose.to(device)
+        garment_pose = garment_pose.to(device)
+        ic_img = ic_img.to(device)
+        org_img = org_img.to(device)
 
-try:
-    for iteration in tqdm(range(start_epoch, iterations), desc="Training", ncols=100):
-        # Apply conditioning dropout
-        if torch.rand(1).item() < conditioning_dropout_rate:
-            Ia = torch.zeros_like(Ia)
-            Jp = torch.zeros_like(Jp)
-            Ic = torch.zeros_like(Ic)
-            Jg = torch.zeros_like(Jg)
-        
-        # Forward pass
-        output = model(z_t, ctryon)
-        
-        # Compute loss
-        alpha_t = 0.5
-        sigma_t = 0.5
-        loss = denoising_score_matching_loss(output, Ia, alpha_t, sigma_t)
-        
-        # Backward pass and optimization
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        # Update learning rate
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr_schedule(iteration)
+        # Enable autocast for mixed-precision training
+        with autocast():
+            # Model 1's forward pass and loss calculation
+            output1 = model1(combined_img, person_pose, garment_pose, ic_img)
+            loss1 = criterion(output1, org_img)  # Use original person image as the target
 
-        # 일정한 간격으로 체크포인트 저장
-        if iteration % 1000 == 0:
-            save_checkpoint(iteration, model, optimizer)
-            logging.info(f"Iteration [{iteration}/{iterations}], Loss: {loss.item():.4f}")
-            print(f"Iteration [{iteration}/{iterations}], Loss: {loss.item():.4f}")
+            # Upsample output1 from 128x128 to 256x256
+            output1_upsampled = F.interpolate(output1, size=(256, 256), mode='bilinear', align_corners=True)
 
-except Exception as e:
-    logging.error(f"Error during training: {e}")
-    raise e
+            # Model 2's forward pass and loss calculation
+            output2 = model2(output1, person_pose, garment_pose, ic_img)  # Using output1 as input to model2
+            loss2 = criterion(output2, org_img)
 
-# Visualization
-import matplotlib.pyplot as plt
+            # Model 3's forward pass and loss calculation
+            output3 = model3(output2) # EfficientUnet의 입력데이터로 ParallelUNet256의 결과를 사용합니다.
+            loss3 = criterion(output3, org_img)
 
-# 모델을 평가 모드로 전환
-model.eval()
+            # Combine the losses if needed
+            loss = loss1 + loss2 + loss3  # EfficientUNet의 손실값도 추가합니다.
+            loss = loss / accumulation_steps  # Normalize the loss because it is accumulated
 
-# 예측 이미지 생성
-with torch.no_grad():
-    generated_image = model(z_t, ctryon)
+        # Backpropagation using gradient accumulation
+        scaler.scale(loss).backward()
 
-# 원본 이미지와 생성된 이미지 출력
-fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        if (i + 1) % accumulation_steps == 0:  # Wait for several backward steps
+            print(f"Epoch {epoch + 1}, Batch {i + 1}, Loss: {loss.item() * accumulation_steps}")
+            scaler.step(optimizer1)  # Performs the optimizer step for model1
+            scaler.step(optimizer2)  # Performs the optimizer step for model2
+            scaler.step(optimizer3)  # EfficientUnet 모델의 옵티마이저 스텝을 수행합니다.
+            scaler.update()  # Updates the scale for next iteration
+            optimizer1.zero_grad()  # Reset gradients tensors for model1
+            optimizer2.zero_grad()  # Reset gradients tensors for model2
+            optimizer3.zero_grad()  # EfficientUnet 모델의 그래디언트 값을 초기화합니다.
 
-# 원본 이미지 출력 (Dropout 적용 전의 원본 이미지 사용)
-axes[0].imshow(Ia_original[0].permute(1, 2, 0).cpu().numpy())
-axes[0].set_title("Original Image")
-axes[0].axis("off")
+        epoch_loss += loss.item() * accumulation_steps  # Accumulate the true loss
+        num_batches += 1
 
-# 생성된 이미지 출력
-axes[1].imshow(generated_image[0].permute(1, 2, 0).cpu().numpy())
-axes[1].set_title("Generated Image")
-axes[1].axis("off")
+    avg_loss = epoch_loss / num_batches
+    print(f"Epoch {epoch + 1}, Average Loss: {avg_loss}")
 
-plt.show()
+    # After the epoch ends, calculate the elapsed time
+    epoch_end_time = time.time()
+    elapsed_time = epoch_end_time - epoch_start_time
+    print(f"Time taken for Epoch {epoch + 1}: {elapsed_time:.2f} seconds")
+
+    # EfficientUNet만을 위한 학습률 스케줄러를 실행합니다.
+    scheduler3.step()
+    warmup_scheduler3.step()
+
+    # Save the models
+    if epoch % 2 == 0:
+        torch.save(model1.state_dict(), f"lightweight_parallel_unet_model1_epoch_{epoch + 1}.pt")
+        torch.save(model2.state_dict(), f"parallel_unet_model2_epoch_{epoch + 1}.pt")
+        torch.save(model3.state_dict(), f"efficient_unet_model3_epoch_{epoch + 1}.pt")
+        print("Models saved.")
+
+
+print("Training complete.")
 
