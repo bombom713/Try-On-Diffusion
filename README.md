@@ -1,8 +1,12 @@
 # TryOnDiffusion<br>
 ▶TryOnDiffusion_A Tale of Two UNets 논문 탐색 후 Preprocessing과 Parelle UNet을 구현해 봤습니다. (스스로 학습용)<br>
 <br>
-※ 프로젝트에서는 준혁님이 구현하신 ParallelUNet에 작성자의 EfficientUNet을 결합한 형태로 작성했습니다.<br>
+※ 프로젝트에서는 진희님과 윤주님이 구현하신 Preprocessing에 준혁님이 구현하신 ParallelUNet에 작성자의 EfficientUNet을 결합한 형태로 작성했습니다.<br>
+결합한 train코드는 지호님이 작성하셨습니다.<br>
+진희님 github: "https://github.com/wlsl6569"
+윤주님 github: "https://github.com/deeplearningb"
 준혁님 github: "https://github.com/Mutoy-choi/Tryondiffusion"<br>
+지호님 github: "https://github.com/capybarajh"
 <br>
 <br>
 <br>
