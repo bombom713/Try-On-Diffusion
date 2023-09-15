@@ -74,7 +74,7 @@ class SelfAttention(nn.Module):
         return out
 
 class DBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=(1, 1), numResNetBlocksPerBlock=1, use_self_attention=True):
+    def __init__(self, in_channels, out_channels, stride=(1, 1), numResNetBlocksPerBlock=1, use_self_attention=False):  # EfficientUNet모델에서는 attention 레이어를 조건부로 적용하지만 ParallelUNet 모델에서는 attention 레이어를 제거한 완전 합성곱 레이러를 사용한다고 하여 인자를 False로 수정합니다.
         super(DBlock, self).__init__()
 
         # Adjust the number of ResNet blocks based on the channels
@@ -125,7 +125,7 @@ class EfficientNetEncoder(nn.Module):
         return x    
 
 class UBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=(1, 1), numResNetBlocksPerBlock=1, use_self_attention=True, use_upsampling=True):
+    def __init__(self, in_channels, out_channels, stride=(1, 1), numResNetBlocksPerBlock=1, use_self_attention=False, use_upsampling=True):  # upsampling을 통해서 해상도를 상승시킵니다. 5년 전 모델에서는 up.conv 레이어를 통해 해상도를 올렸으나 제 모델은 efficientnet을 인코더로 사용합니다.
         super(UBlock, self).__init__()
         
         # use_upsampling 속성 초기화
