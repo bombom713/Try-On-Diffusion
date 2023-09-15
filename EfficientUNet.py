@@ -14,7 +14,7 @@ class ResNetBlock(nn.Module):
         super(ResNetBlock, self).__init__()
 
         # First GroupNorm -> Swish -> Convolution sequence
-        self.groupnorm1 = nn.GroupNorm(num_groups=8, num_channels=channels)  # groupnorm의 32값은 임의의 값이자 하이퍼파라미터 값 이므로, 1 or num_channels or 다른 수 총 3가지 옵션으로 조정 가능
+        self.groupnorm1 = nn.GroupNorm(num_groups=8, num_channels=channels)  # groupnorm의 32값은 임의의 값이자 하이퍼파라미터 값 이므로, 1 or num_channels or 다른 수 총 3가지 옵션으로 조정 가능합니다.
         self.swish1 = Swish()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
 
@@ -39,7 +39,7 @@ class Flatten(nn.Module):
 class ImageToLinear(nn.Module):
     def __init__(self):
         super(ImageToLinear, self).__init__()
-        self.efficient_unet = EfficientUNet()  # image data(2D)를 vector data(1D)로 받을 때 기존에 사용했던 UNet의 종류를 입력해야 함
+        self.efficient_unet = EfficientUNet()  # image data(2D)를 vector data(1D)로 받을 때 기존에 사용했던 UNet의 종류를 입력해야 하는 것 같습니다.
         self.flatten = Flatten()
         self.fc = nn.Linear(256*256*3, 1000)
 
