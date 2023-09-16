@@ -11,21 +11,21 @@ class Swish(nn.Module):
         return x * torch.sigmoid(x)
     
 class ResNetBlock(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, in_channels, out_channels):
         super(ResNetBlock, self).__init__()
 
         # First GroupNorm -> Swish -> Convolution sequence
-        self.groupnorm1 = nn.GroupNorm(num_groups=8, num_channels=channels)  # groupnorm의 32값은 임의의 값이자 하이퍼파라미터 값 이므로, 1 or num_channels or 다른 수 총 3가지 옵션으로 조정 가능합니다.
+        self.groupnorm1 = nn.GroupNorm(num_groups=8, num_channels=in_channels)  # groupnorm의 32값은 임의의 값이자 하이퍼파라미터 값 이므로, 1 or num_channels or 다른 수 총 3가지 옵션으로 조정 가능합니다.
         self.swish1 = Swish()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
 
         # Second GroupNorm -> Swish -> Convolution sequence
-        self.groupnorm2 = nn.GroupNorm(num_groups=8, num_channels=channels)
+        self.groupnorm2 = nn.GroupNorm(num_groups=8, num_channels=in_channels)
         self.swish2 = Swish()
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
 
         # Skip connection
-        self.skip = nn.Conv2d(channels, channels, kernel_size=1, stride=1, bias=False)
+        self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False)
 
     def forward(self, x):
         out = self.conv1(self.swish1(self.groupnorm1(x)))
