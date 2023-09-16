@@ -127,6 +127,7 @@ class EfficientNetEncoder(nn.Module):
 
 class UBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=(1, 1), numResNetBlocksPerBlock=1, use_self_attention=False, use_upsampling=True):
+        super(UBlock, self).__init__()
         
         # use_upsampling 속성 초기화
         self.use_upsampling = use_upsampling
