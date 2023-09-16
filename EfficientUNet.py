@@ -22,7 +22,7 @@ class ResNetBlock(nn.Module):
         # Second GroupNorm -> Swish -> Convolution sequence
         self.groupnorm2 = nn.GroupNorm(num_groups=8, num_channels=in_channels)
         self.swish2 = Swish()
-        self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
 
         # Skip connection
         self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False)
