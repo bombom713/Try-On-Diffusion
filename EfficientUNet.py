@@ -90,7 +90,7 @@ class DBlock(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=(1, 1), padding=1, bias=False)
 
         # Skip connection for downsampling
-        self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False)
+        self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=(1, 1), bias=False)
 
         # Multiple ResNetBlocks
         self.resblocks = nn.Sequential(*[ResNetBlock(out_channels) for _ in range(numResNetBlocksPerBlock)])
