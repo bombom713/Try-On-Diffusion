@@ -167,14 +167,17 @@ class EfficientUNet(nn.Module):
         # Use EfficientNet as the encoder
         self.encoder = EfficientNetEncoder(version=version)
 
+        # Get the number of channels from the encoder
+        encoder_channels = self.n_channels
+
         # Initialize concat_input to True
         self.concat_input = True
 
-        # Initial Convolution layer
-        self.init_conv = nn.Conv2d(3, 1024, kernel_size=3, padding=1, bias=False)
+       # Initial Convolution layer
+        self.init_conv = nn.Conv2d(encoder_channels, 1024, kernel_size=3, padding=1, bias=False)
 
         # DBlocks
-        self.dblock_1024 = DBlock(1024, 512, stride=(2, 2), numResNetBlocksPerBlock=8, use_self_attention=False)
+        self.dblock_1024 = DBlock(encoder_channels, 512, stride=(2, 2), numResNetBlocksPerBlock=8, use_self_attention=False)
         self.dblock_512 = DBlock(512, 256, stride=(2, 2), numResNetBlocksPerBlock=8)
         self.dblock_256 = DBlock(256, 128, stride=(2, 2), numResNetBlocksPerBlock=4)
         self.dblock_128 = DBlock(128, 64, stride=(2, 2), numResNetBlocksPerBlock=2)
