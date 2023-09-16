@@ -89,9 +89,6 @@ class DBlock(nn.Module):
         # Convolution layer without downsampling
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=(1, 1), padding=1, bias=False)
 
-        # Downsampling using MaxPool2d
-        self.downsample = nn.MaxPool2d(2, 2)
-
         # Skip connection for downsampling
         self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False)
 
@@ -104,9 +101,8 @@ class DBlock(nn.Module):
             self.self_attention = SelfAttention(out_channels)
 
     def forward(self, x):
-        downsampled_x = self.downsample(x)  # Downsampling before convolution
-        skip_x = self.skip(downsampled_x)
-        x = self.conv(downsampled_x)
+        skip_x = self.skip(x)
+        x = self.conv(x)
         x = self.resblocks(x)
         x += skip_x
         if self.use_self_attention:
