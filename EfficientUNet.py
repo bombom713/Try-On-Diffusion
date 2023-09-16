@@ -173,7 +173,7 @@ class EfficientUNet(nn.Module):
         self.concat_input = True
 
        # Initial Convolution layer
-        self.init_conv = nn.Conv2d(encoder_channels, 1024, kernel_size=3, padding=1, bias=False)
+        self.init_conv = nn.Conv2d(encoder_channels, encoder_channels, kernel_size=3, padding=1, bias=False)
 
         # DBlocks
         self.dblock_1024 = DBlock(encoder_channels, 512, stride=(2, 2), numResNetBlocksPerBlock=8, use_self_attention=False)
