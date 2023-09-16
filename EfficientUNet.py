@@ -126,8 +126,7 @@ class EfficientNetEncoder(nn.Module):
         return x    
 
 class UBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=(1, 1), numResNetBlocksPerBlock=1, use_self_attention=False, use_upsampling=True):  # upsampling을 통해서 해상도를 상승시킵니다. 5년 전 모델에서는 up.conv 레이어를 통해 해상도를 올렸으나 제 모델은 efficientnet을 인코더로 사용합니다.
-        super(UBlock, self).__init__()
+    def __init__(self, in_channels, out_channels, stride=(1, 1), numResNetBlocksPerBlock=1, use_self_attention=False, use_upsampling=True):
         
         # use_upsampling 속성 초기화
         self.use_upsampling = use_upsampling
