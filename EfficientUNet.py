@@ -129,7 +129,7 @@ class UBlock(nn.Module):
         self.use_upsampling = use_upsampling
 
         # Multiple ResNetBlocks
-        self.resblocks = nn.Sequential(*[ResNetBlock(out_channels, out_channels) for _ in range(numResNetBlocksPerBlock)])
+        self.resblocks = nn.Sequential(*[ResNetBlock(in_channels, out_channels) for _ in range(numResNetBlocksPerBlock)])
 
         # Convolution layer without upsampling
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=(1, 1), padding=1, bias=False)
