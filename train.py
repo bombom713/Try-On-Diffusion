@@ -1,5 +1,14 @@
-# 지호님께서 준혁님 train코드에 작성자의 EfficientUNet을 결합하여 debugging하셨습니다.
-# EfficientUNet을 위해 추가된 코드는 주석처리하였습니다.
+import zipfile
+import os
+
+# Check if the 'trainexample.zip' exists in the current directory
+if os.path.exists('trainexample.zip'):
+    # Unzip the file
+    with zipfile.ZipFile('trainexample.zip', 'r') as zip_ref:
+        zip_ref.extractall('./trainexample')
+    print("ZIP file extracted.")
+else:
+    print("trainexample.zip does not exist in the current directory.")
 
 import torch
 import torch.optim as optim
@@ -8,14 +17,14 @@ import torch.nn.functional as F
 from torchvision import transforms
 from LightweightParallelUNet import LightweightParallelUNet  # Assuming you have this class defined somewhere
 from parallelUNet import ParallelUNet
-from EfficientUNet import *  # EfficientUNet 클래스를 불러옵니다.
+from EfficientUNet import *
 from Customdataloader import CustomDataset  # Uncomment if CustomDataset is in a separate file
 from torch.cuda.amp import autocast, GradScaler
 import time
 
 torch.cuda.empty_cache()
 # Check if CUDA is available
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Transformations
@@ -35,7 +44,87 @@ IMG_CHANNEL = 3
 
 EMB_DIM = 51
 
-parallel_config = {
+parallel_config_128 = {
+    'garment_unet': {
+        'dstack': {
+            'blocks': [
+                {
+                    'channels': 128,
+                    'repeat': 3
+                },
+                {
+                    'channels': 256,
+                    'repeat': 4
+                },
+                {
+                    'channels': 512,
+                    'repeat': 6
+                },
+                {
+                    'channels': 1024,
+                    'repeat': 7
+                }]
+        },
+        'ustack': {
+            'blocks': [
+                {
+                    'channels': 1024,
+                    'repeat': 7
+                },
+                {
+                    'channels': 512,
+                    'repeat': 6
+                }]
+        }
+    },
+    'person_unet': {
+        'dstack': {
+            'blocks': [
+                {
+                    'channels': 128,
+                    'repeat': 3
+                },
+                {
+                    'channels': 256,
+                    'repeat': 4
+                },
+                {
+                    'block_type': 'FiLM_ResBlk_Self_Cross',
+                    'channels': 512,
+                    'repeat': 6
+                },
+                {
+
+                    'block_type': 'FiLM_ResBlk_Self_Cross',
+                    'channels': 1024,
+                    'repeat': 7
+                }]
+        },
+        'ustack': {
+            'blocks': [
+                {
+                    'block_type': 'FiLM_ResBlk_Self_Cross',
+                    'channels': 1024,
+                    'repeat': 7
+                },
+                {
+                    'block_type': 'FiLM_ResBlk_Self_Cross',
+                    'channels': 512,
+                    'repeat': 6
+                },
+                {
+                    'channels': 256,
+                    'repeat': 4
+                },
+                {
+                    'channels': 128,
+                    'repeat': 3
+                }]
+        }
+    }
+}
+
+parallel_config_256 = {
     'garment_unet': {
         'dstack': {
             'blocks': [
@@ -116,13 +205,13 @@ parallel_config = {
 }
 
 # Initialize both models and their optimizers
-model1 = LightweightParallelUNet(EMB_DIM, parallel_config)
-model2 = ParallelUNet(EMB_DIM, parallel_config)  # Assuming you have a ParallelUNet class
-model3 = EfficientUNet()  # EfficientUNet 모델을 사용합니다.
+model1 = ParallelUNet(EMB_DIM, parallel_config_128)
+model2 = ParallelUNet(EMB_DIM, parallel_config_256)  # Assuming you have a ParallelUNet class
+model3 = EfficientUNet()
 
 optimizer1 = optim.AdamW(model1.parameters(), lr=0.0001)
 optimizer2 = optim.AdamW(model2.parameters(), lr=0.0001)
-optimizer3 = optim.AdamW(model3.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0)  # AdamW 옵티마이저에 들어가는 인자의 차이가 있습니다.
+optimizer3 = optim.AdamW(model3.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0)
 
 # EfficientUNet에 대한 CosineAnnealing 스케줄러
 T_max = 2500000  # 학습 에포크 수에 따라 변하는 하이퍼 파라미터 값입니다.
@@ -138,7 +227,7 @@ criterion = torch.nn.MSELoss()  # Mean Squared Error Loss
 # Move both models to the GPU
 model1.to(device)
 model2.to(device)
-model3.to(device)  # EfficientUNet 모델을 GPU를 사용해 처리합니다.
+model3.to(device)
 
 # Initialize the gradient scaler for fp16
 scaler = GradScaler()
@@ -156,7 +245,7 @@ for epoch in range(10):  # 10 epochs
 
     optimizer1.zero_grad(set_to_none=True)
     optimizer2.zero_grad(set_to_none=True)
-    optimizer3.zero_grad(set_to_none=True)  # EfficientUNet 모델의 옵티마이저 사용을 위해 초기화합니다.
+    optimizer3.zero_grad(set_to_none=True)
 
     # Wrap your dataloader with tqdm for a progress bar
     for i, (combined_img, person_pose, garment_pose, ic_img, org_img) in enumerate(dataloader):
@@ -182,11 +271,16 @@ for epoch in range(10):  # 10 epochs
             loss2 = criterion(output2, org_img)
 
             # Model 3's forward pass and loss calculation
-            output3 = model3(output2) # EfficientUnet의 입력데이터로 ParallelUNet256의 결과를 사용합니다.
-            loss3 = criterion(output3, org_img)
+            output3 = model3(output2) # Using output2 as input to model3
+
+            # Upsample the original image to match the spatial resolution of output3
+            upsample = nn.Upsample(size=(512, 512), mode='bilinear', align_corners=True)
+            org_img_upsampled = upsample(org_img)
+            
+            loss3 = criterion(output3, org_img_upsampled)
 
             # Combine the losses if needed
-            loss = loss1 + loss2 + loss3  # EfficientUNet의 손실값도 추가합니다.
+            loss = loss1 + loss2 + loss3
             loss = loss / accumulation_steps  # Normalize the loss because it is accumulated
 
         # Backpropagation using gradient accumulation
@@ -196,11 +290,11 @@ for epoch in range(10):  # 10 epochs
             print(f"Epoch {epoch + 1}, Batch {i + 1}, Loss: {loss.item() * accumulation_steps}")
             scaler.step(optimizer1)  # Performs the optimizer step for model1
             scaler.step(optimizer2)  # Performs the optimizer step for model2
-            scaler.step(optimizer3)  # EfficientUnet 모델의 옵티마이저 스텝을 수행합니다.
+            scaler.step(optimizer3)
             scaler.update()  # Updates the scale for next iteration
             optimizer1.zero_grad()  # Reset gradients tensors for model1
             optimizer2.zero_grad()  # Reset gradients tensors for model2
-            optimizer3.zero_grad()  # EfficientUnet 모델의 그래디언트 값을 초기화합니다.
+            optimizer3.zero_grad()
 
         epoch_loss += loss.item() * accumulation_steps  # Accumulate the true loss
         num_batches += 1
@@ -213,7 +307,7 @@ for epoch in range(10):  # 10 epochs
     elapsed_time = epoch_end_time - epoch_start_time
     print(f"Time taken for Epoch {epoch + 1}: {elapsed_time:.2f} seconds")
 
-    # EfficientUNet만을 위한 학습률 스케줄러를 실행합니다.
+    # This scheduler is specifically applied to EfficientUNet
     scheduler3.step()
     warmup_scheduler3.step()
 
@@ -226,4 +320,5 @@ for epoch in range(10):  # 10 epochs
 
 
 print("Training complete.")
+
 
