@@ -15,23 +15,24 @@ class ResNetBlock(nn.Module):
         super(ResNetBlock, self).__init__()
 
         # First GroupNorm -> Swish -> Convolution sequence
-        self.groupnorm1 = nn.GroupNorm(num_groups=8, num_channels=in_channels)  # groupnorm의 32값은 임의의 값이자 하이퍼파라미터 값 이므로, 1 or num_channels or 다른 수 총 3가지 옵션으로 조정 가능합니다.
+        self.groupnorm1 = nn.GroupNorm(num_groups=8, num_channels=in_channels)
         self.swish1 = Swish()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=False)  # out_channels 대신 in_channels 사용
 
         # Second GroupNorm -> Swish -> Convolution sequence
-        self.groupnorm2 = nn.GroupNorm(num_groups=8, num_channels=out_channels)
+        self.groupnorm2 = nn.GroupNorm(num_groups=8, num_channels=in_channels)  # out_channels 대신 in_channels 사용
         self.swish2 = Swish()
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=False)  # out_channels 대신 in_channels 사용
 
-        # Skip connection
-        self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False)
+        # Skip connection (채널 수 변경 없음)
+        self.skip = nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, bias=False)
 
     def forward(self, x):
         out = self.conv1(self.swish1(self.groupnorm1(x)))
         out = self.conv2(self.swish2(self.groupnorm2(out)))
         out += self.skip(x)
         return out
+
     
 class Flatten(nn.Module):
     def forward(self, x):
@@ -147,14 +148,23 @@ class UBlock(nn.Module):
             self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
         else:
             self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+
+        print(f"UBlock initialized with conv weight size: {self.conv.weight.size()}")
+
     def forward(self, x):
+        print(f"Before resblocks in UBlock: {x.size()}")
         x = self.resblocks(x)
+        print(f"After resblocks in UBlock: {x.size()}")
         if self.use_self_attention:
             x = self.self_attention(x)
+            print(f"After self_attention in UBlock: {x.size()}")
         x = self.conv(x)
-        if self.use_upsampling:  # 조건 추가
-            x = self.upsample(x)  # Upsampling after convolution
+        print(f"After conv in UBlock: {x.size()}")
+        if self.use_upsampling:
+            x = self.upsample(x)
+            print(f"After upsample in UBlock: {x.size()}")
         return x
+
     
 class EfficientUNet(nn.Module):
     def __init__(self, version="efficientnet_b0"):
@@ -191,21 +201,21 @@ class EfficientUNet(nn.Module):
         self.ublock_1024 = UBlock(1024, 1024, stride=(2, 2))
 
         # Final Dense layer
-        self.dense = nn.Conv2d(256, 3, kernel_size=1, stride=1, bias=True)
+        self.dense = nn.Conv2d(1027, 3, kernel_size=1, stride=1, bias=True)
 
     @property  # 각 efficientnet version에 따른 채널 수를 할당하는 메소드
     def n_channels(self):
-        n_channels_dict = {'efficientnet-b0': 1280, 'efficientnet-b1': 1280, 'efficientnet-b2': 1408,
-                           'efficientnet-b3': 1536, 'efficientnet-b4': 1792, 'efficientnet-b5': 2048,
-                           'efficientnet-b6': 2304, 'efficientnet-b7': 2560}
+        n_channels_dict = {'efficientnet_b0': 1280, 'efficientnet_b1': 1280, 'efficientnet_b2': 1408,
+                           'efficientnet_b3': 1536, 'efficientnet_b4': 1792, 'efficientnet_b5': 2048,
+                           'efficientnet_b6': 2304, 'efficientnet_b7': 2560}
         return n_channels_dict[self.encoder.name]
 
     @property  # 각 efficientnet version에 따른 이미지 크기를 할당하는 메소드
     def size(self):
-        size_dict = {'efficientnet-b0': [592, 296, 152, 80, 35, 32], 'efficientnet-b1': [592, 296, 152, 80, 35, 32],
-                     'efficientnet-b2': [600, 304, 152, 80, 35, 32], 'efficientnet-b3': [608, 304, 160, 88, 35, 32],
-                     'efficientnet-b4': [624, 312, 160, 88, 35, 32], 'efficientnet-b5': [640, 320, 168, 88, 35, 32],
-                     'efficientnet-b6': [656, 328, 168, 96, 35, 32], 'efficientnet-b7': [672, 336, 176, 96, 35, 32]}
+        size_dict = {'efficientnet_b0': [592, 296, 152, 80, 35, 32], 'efficientnet_b1': [592, 296, 152, 80, 35, 32],
+                     'efficientnet_b2': [600, 304, 152, 80, 35, 32], 'efficientnet_b3': [608, 304, 160, 88, 35, 32],
+                     'efficientnet_b4': [624, 312, 160, 88, 35, 32], 'efficientnet_b5': [640, 320, 168, 88, 35, 32],
+                     'efficientnet_b6': [656, 328, 168, 96, 35, 32], 'efficientnet_b7': [672, 336, 176, 96, 35, 32]}
         return size_dict[self.encoder.name]
 
     def forward(self, x):
@@ -224,18 +234,25 @@ class EfficientUNet(nn.Module):
 
         # UBlock forward passes with skip connections
         x = self.ublock_16(x)
-        x += skip_32
+        x = adjust_and_add(x, skip_32)
         x = self.ublock_32(x)
-        x += skip_64
+        x = adjust_and_add(x, skip_64)
         x = self.ublock_64(x)
-        x += skip_128
+        x = adjust_and_add(x, skip_128)
         x = self.ublock_128(x)
-        x += skip_256
+        x = adjust_and_add(x, skip_256)
         x = self.ublock_256(x)
-        x += skip_512
+        x = adjust_and_add(x, skip_512)
         x = self.ublock_512(x)
-        x += skip_1024
+        x = adjust_and_add(x, skip_1024)
         x = self.ublock_1024(x)
+
+        # input_의 resolution을 x와 동일하게 변경
+        input_ = F.interpolate(input_, size=(x.size(2), x.size(3)))
+
+        # input image와 final output 출력 연결 전에 spatial resolution 확인
+        print(f"Spatial resolution of x: {x.size()[-2]}x{x.size()[-1]}")
+        print(f"Spatial resolution of input_: {input_.size()[-2]}x{input_.size()[-1]}")
 
         # input image와 final output 출력 연결
         if self.concat_input:
@@ -243,6 +260,15 @@ class EfficientUNet(nn.Module):
 
         x = self.dense(x)
         return x
+
+def adjust_and_add(x, skip):
+    # Adjust the channels of skip and upsample to match x
+    adjust_channels = nn.Conv2d(skip.size(1), x.size(1), kernel_size=1).to(skip.device)
+    skip = adjust_channels(skip)
+    upsample = nn.Upsample(size=(x.size(2), x.size(3)), mode='bilinear', align_corners=True)
+    skip = upsample(skip)
+    return x + skip
+
 
 # 각 버전별 U-Net 모델을 반환하는 함수들
 def get_efficientunet_b0():
@@ -268,15 +294,3 @@ def get_efficientunet_b6():
 
 def get_efficientunet_b7():
     return EfficientUNet(version="efficientnet_b7")
-
-# ----------------------------------------------아래는 train 코드에 적용할 내용입니다.
-optimizer3 = optim.AdamW(model3.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0)
-
-# EfficientUNet에 대한 CosineAnnealing 스케줄러
-T_max = 2500000  # 학습 에포크 수에 따라 변하는 하이퍼 파라미터 값입니다.
-scheduler3 = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer3, T_max=T_max)
-
-# EfficientUNet에 대한 Linear warmup 스케줄러
-warmup_steps = 10000
-lr_lambda = lambda epoch: min(1.0, epoch / warmup_steps)
-warmup_scheduler3 = torch.optim.lr_scheduler.LambdaLR(optimizer3, lr_lambda)
